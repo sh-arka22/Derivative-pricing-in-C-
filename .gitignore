@@ -1,0 +1,15 @@
+build/
+build_*/
+*.o
+*.a
+*.so
+*.csv
+*.dSYM/
+.vscode/
+.idea/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile.cmake
+.claude
+.*pdf
