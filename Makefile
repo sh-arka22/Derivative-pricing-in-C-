@@ -50,6 +50,13 @@ run-tests: test
 $(BUILDDIR)/generate_data: tools/generate_data.cpp $(LIBSRC) | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LIBSRC) $< -o $@ -lm
 
+$(BUILDDIR)/generate_showcase: tools/generate_showcase.cpp $(LIBSRC) | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) $(OPTFLAGS) $(INCLUDES) $(LIBSRC) $< -o $@ -lm
+
+showcase: release $(BUILDDIR)/generate_showcase
+	./$(BUILDDIR)/generate_showcase
+	python3 tools/render_showcase.py
+
 $(BUILDDIR)/pricer_service: tools/pricer_service.cpp $(LIBSRC) | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) $(OPTFLAGS) $(INCLUDES) $(LIBSRC) $< -o $@ -lm
 
