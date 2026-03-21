@@ -9,7 +9,7 @@ BUILDDIR  := build
 LIBSRC    := $(SRCDIR)/quantpricer.cpp
 
 # Targets
-.PHONY: all demo test examples clean release debug
+.PHONY: all demo test examples clean release debug dashboard viz
 
 all: release
 
@@ -49,6 +49,12 @@ run-tests: test
 
 $(BUILDDIR)/generate_data: tools/generate_data.cpp $(LIBSRC) | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(LIBSRC) $< -o $@ -lm
+
+$(BUILDDIR)/pricer_service: tools/pricer_service.cpp $(LIBSRC) | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) $(OPTFLAGS) $(INCLUDES) $(LIBSRC) $< -o $@ -lm
+
+dashboard: release $(BUILDDIR)/pricer_service
+	cd dashboard && streamlit run app.py
 
 viz: release $(BUILDDIR)/generate_data
 	./$(BUILDDIR)/generate_data
