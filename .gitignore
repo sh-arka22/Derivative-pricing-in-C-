@@ -12,4 +12,5 @@ CMakeFiles/
 cmake_install.cmake
 Makefile.cmake
 .claude
-.*pdf
+*.pdf
+.DS_Store
