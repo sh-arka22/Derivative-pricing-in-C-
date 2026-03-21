@@ -18,6 +18,7 @@
 #include "barrier/barrier.h"
 #include "multi_asset/multi_asset.h"
 #include "risk/risk.h"
+#include "fixed_income/fixed_income.h"
 
 #include <iostream>
 #include <cmath>
@@ -522,6 +523,77 @@ void test_risk_management() {
     check_approx(stress[1].portfolio_pnl, 0.10, 1e-10, "Stress test rally P&L");
 }
 
+void test_fixed_income() {
+    std::cout << "\n=== Fixed Income Tests (Day 13) ===\n";
+
+    using namespace fixed_income;
+
+    // Flat curve: all zero rates should equal the flat rate
+    YieldCurve flat(0.05);
+    check_approx(flat.zero_rate(1.0), 0.05, 1e-10, "Flat curve zero rate");
+    check_approx(flat.zero_rate(10.0), 0.05, 1e-10, "Flat curve at 10y");
+
+    // Discount factor: D(t) = exp(-r*t)
+    check_approx(flat.discount(1.0), std::exp(-0.05), 1e-10, "D(1) = exp(-0.05)");
+    check_approx(flat.discount(0.0), 1.0, 1e-10, "D(0) = 1");
+
+    // Forward rate on flat curve = flat rate
+    check_approx(flat.forward_rate(1.0, 2.0), 0.05, 1e-6, "Flat fwd rate = spot");
+
+    // Nelson-Siegel: r(0) = b0+b1, r(inf) = b0
+    NelsonSiegelParams ns(0.05, -0.02, 0.01, 2.0);
+    check_approx(nelson_siegel_rate(0.0, ns), 0.03, 1e-10, "NS r(0) = b0+b1");
+    check_approx(nelson_siegel_rate(1000.0, ns), 0.05, 0.001, "NS r(inf) ~ b0");
+
+    // Zero-coupon bond: duration = maturity
+    Bond zcb(100, 0.0, 5.0, 2);
+    auto zcb_risk = bond_risk(zcb, 0.05);
+    check_approx(zcb_risk.macaulay_duration, 5.0, 1e-10, "ZCB duration = maturity");
+
+    // Coupon bond: duration < maturity
+    Bond cpn(100, 0.05, 10.0, 2);
+    auto cpn_risk = bond_risk(cpn, 0.05);
+    check(cpn_risk.macaulay_duration < 10.0, "Coupon bond duration < maturity");
+    check(cpn_risk.macaulay_duration > 0.0, "Duration positive");
+
+    // Convexity positive
+    check(cpn_risk.convexity > 0.0, "Convexity positive");
+
+    // DV01 positive
+    check(cpn_risk.dv01 > 0.0, "DV01 positive");
+
+    // Higher coupon → lower duration (at same yield)
+    Bond high_cpn(100, 0.08, 10.0, 2);
+    auto high_risk = bond_risk(high_cpn, 0.05);
+    check(high_risk.macaulay_duration < cpn_risk.macaulay_duration,
+          "Higher coupon -> lower duration");
+
+    // YTM round-trip: price → YTM → price should match
+    double p1 = bond_price_at_yield(cpn, 0.06);
+    double y1 = yield_to_maturity(cpn, p1);
+    check_approx(y1, 0.06, 1e-8, "YTM round-trip");
+
+    // Duration-convexity approximation: small dy should be very accurate
+    double dy_small = 0.001;  // 10bp
+    double exact_dp = bond_price_at_yield(cpn, 0.05 + dy_small) - cpn_risk.price;
+    double approx_dp = price_change_approx(cpn_risk, dy_small);
+    check_approx(approx_dp, exact_dp, 0.01, "Dur+conv approx (10bp)");
+
+    // Bootstrapping: deposit rate should give correct discount factor
+    std::vector<BootstrapInstrument> insts = {
+        {1.0, 0.05, true},
+        {2.0, 0.05, false},
+    };
+    auto boot = bootstrap(insts);
+    // 1Y deposit at 5%: D = 1/(1+0.05) = 0.95238, r = -ln(0.95238) = 0.04879
+    double expected_D = 1.0 / 1.05;
+    check_approx(boot.discount(1.0), expected_D, 0.001, "Bootstrap 1Y deposit");
+
+    // Par rate on flat curve should equal the flat rate (approximately)
+    double pr = par_rate(flat, 10.0);
+    check_approx(pr, 0.05, 0.002, "Par rate on flat curve ~ flat rate");
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -545,6 +617,7 @@ int main() {
     test_barrier_options();
     test_multi_asset();
     test_risk_management();
+    test_fixed_income();
 
     std::cout << "\n" << std::string(52, '=') << "\n"
               << "  Results: " << tests_passed << " passed, "
