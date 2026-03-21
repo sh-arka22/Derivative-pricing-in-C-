@@ -20,6 +20,7 @@
 #include "risk/risk.h"
 #include "fixed_income/fixed_income.h"
 #include "rates/rate_models.h"
+#include "orderbook/orderbook.h"
 
 #include <iostream>
 #include <cmath>
@@ -654,6 +655,87 @@ void test_rate_models() {
     check_approx(B_hw, B_vas, 1e-10, "HW B(tau) = Vasicek B(tau)");
 }
 
+void test_orderbook() {
+    std::cout << "\n=== Order Book Tests (Day 15) ===\n";
+
+    using namespace orderbook;
+
+    OrderBook book("TEST");
+
+    // Empty book has no bids/asks
+    check(!book.has_bids(), "Empty book: no bids");
+    check(!book.has_asks(), "Empty book: no asks");
+
+    // Add bid and ask — no crossing, no match
+    book.add_limit_order(Side::Buy, 100.0, 500);
+    book.add_limit_order(Side::Sell, 101.0, 300);
+    check(book.has_bids() && book.has_asks(), "Book has both sides");
+    check_approx(book.best_bid(), 100.0, 1e-10, "Best bid = 100");
+    check_approx(book.best_ask(), 101.0, 1e-10, "Best ask = 101");
+    check_approx(book.spread(), 1.0, 1e-10, "Spread = 1.0");
+    check_approx(book.mid_price(), 100.5, 1e-10, "Mid = 100.5");
+    check(book.trade_count() == 0, "No trades yet");
+
+    // Aggressive buy crosses the spread — should match
+    book.add_limit_order(Side::Buy, 101.0, 200);
+    check(book.trade_count() == 1, "One trade after crossing");
+    // 200 matched at 101, 100 remain resting in ask
+    check(book.ask_depth_at_best() == 100, "100 remaining ask after partial fill");
+
+    // Market order sells into the bid
+    book.add_market_order(Side::Sell, 500);
+    // Should fill the bid at 100.0 (500 qty)
+    check(book.trade_count() == 2, "Trade from market sell");
+    check(!book.has_bids(), "Bids consumed by market sell");
+
+    // Cancel order
+    OrderBook book2("CANCEL_TEST");
+    auto id1 = book2.add_limit_order(Side::Buy, 50.0, 100);
+    auto id2 = book2.add_limit_order(Side::Buy, 50.0, 200);
+    check(book2.bid_depth_at_best() == 300, "Depth = 300 before cancel");
+    bool ok = book2.cancel_order(id1);
+    check(ok, "Cancel order succeeds");
+    check(book2.bid_depth_at_best() == 200, "Depth = 200 after cancel");
+
+    // Cancel non-existent order
+    check(!book2.cancel_order(99999), "Cancel non-existent returns false");
+
+    // FIFO priority: first order should fill first
+    OrderBook book3("FIFO_TEST");
+    auto first = book3.add_limit_order(Side::Sell, 100.0, 100);
+    auto second = book3.add_limit_order(Side::Sell, 100.0, 100);
+    book3.add_limit_order(Side::Buy, 100.0, 50);
+    // Should match against 'first' (FIFO), partial fill
+    check(book3.trade_count() == 1, "FIFO: one trade");
+    check(book3.trades()[0].sell_order_id == first, "FIFO: first order filled first");
+    // 50 remains from first order, second untouched
+    check(book3.ask_depth_at_best() == 150, "FIFO: 150 remaining (50+100)");
+
+    // Price priority: best price fills first
+    OrderBook book4("PRICE_TEST");
+    book4.add_limit_order(Side::Sell, 102.0, 100);
+    book4.add_limit_order(Side::Sell, 101.0, 100);  // Better price
+    book4.add_limit_order(Side::Sell, 103.0, 100);
+    check_approx(book4.best_ask(), 101.0, 1e-10, "Best ask = lowest");
+    book4.add_market_order(Side::Buy, 50);
+    check(book4.trades()[0].price == 101.0, "Price priority: fills at best ask");
+
+    // VWAP calculation
+    OrderBook book5("VWAP_TEST");
+    book5.add_limit_order(Side::Sell, 100.0, 100);
+    book5.add_limit_order(Side::Sell, 101.0, 100);
+    book5.add_market_order(Side::Buy, 200);
+    // VWAP = (100*100 + 101*100) / 200 = 100.5
+    check_approx(book5.vwap(), 100.5, 1e-10, "VWAP = 100.5");
+
+    // Imbalance
+    OrderBook book6("IMB_TEST");
+    book6.add_limit_order(Side::Buy, 99.0, 800);
+    book6.add_limit_order(Side::Sell, 101.0, 200);
+    // imb = (800-200)/(800+200) = 0.6
+    check_approx(book6.imbalance(), 0.6, 1e-10, "Imbalance = 0.6");
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -679,6 +761,7 @@ int main() {
     test_risk_management();
     test_fixed_income();
     test_rate_models();
+    test_orderbook();
 
     std::cout << "\n" << std::string(52, '=') << "\n"
               << "  Results: " << tests_passed << " passed, "
