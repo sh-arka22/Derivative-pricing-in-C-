@@ -17,6 +17,7 @@
 #include "mc/american_mc.h"
 #include "barrier/barrier.h"
 #include "multi_asset/multi_asset.h"
+#include "risk/risk.h"
 
 #include <iostream>
 #include <cmath>
@@ -450,6 +451,77 @@ void test_multi_asset() {
                  "Basket vol(N=100) ~ sigma*sqrt(rho)");
 }
 
+void test_risk_management() {
+    std::cout << "\n=== Risk Management Tests (Day 12) ===\n";
+
+    using namespace risk;
+
+    // Parametric VaR: known result for standard normal
+    // VaR_99 for N(0,1) = 2.3263 (z_0.99)
+    auto v = parametric_var(0.0, 1.0, 0.99);
+    check_approx(v.var, 2.3263, 0.01, "Parametric VaR(99%) for N(0,1)");
+
+    // CVaR > VaR always
+    check(v.cvar > v.var, "CVaR > VaR");
+
+    // CVaR for Normal: mu + sigma * phi(z) / (1-alpha)
+    // phi(2.3263) ~ 0.02665, so CVaR ~ 0.02665/0.01 ~ 2.665
+    check_approx(v.cvar, 2.665, 0.01, "Parametric CVaR(99%) for N(0,1)");
+
+    // Scenario VaR from known data
+    std::vector<double> pnl = {-10, -5, -3, -1, 0, 1, 2, 3, 5, 10};
+    auto sv = scenario_var(pnl, 0.90);
+    // 10% worst = 1 scenario out of 10 = the worst one = -10
+    check_approx(sv.var, 10.0, 0.01, "Scenario VaR from sorted data");
+    check(sv.cvar >= sv.var, "Scenario CVaR >= VaR");
+
+    // Portfolio VaR: MC should match parametric for normal returns
+    std::vector<double> w = {0.6, 0.4};
+    std::vector<double> mu_vec = {0.0, 0.0};
+    std::vector<double> sigma_vec = {0.01, 0.02};
+    QMatrix<double> corr(2, 2);
+    corr(0,0) = 1.0; corr(0,1) = 0.5;
+    corr(1,0) = 0.5; corr(1,1) = 1.0;
+    auto cov = build_cov_matrix(sigma_vec, corr);
+
+    auto pvar = portfolio_parametric_var(w, cov, mu_vec, 0.99);
+    auto mcvar = mc_portfolio_var(w, mu_vec, cov, 0.99, 500000);
+    check_approx(mcvar.var, pvar.var, 0.001,
+                 "MC VaR matches parametric (normal)");
+
+    // Risk decomposition: component VaRs sum to total
+    auto decomp = decompose_var(w, cov, 0.99);
+    double comp_sum = 0.0;
+    for (auto c : decomp.component_var) comp_sum += c;
+    check_approx(comp_sum, decomp.total_var, 1e-10,
+                 "Component VaRs sum to total (Euler)");
+
+    // VaR subadditivity violation
+    auto demo = demonstrate_subadditivity();
+    check(demo.violated, "VaR subadditivity violated (not coherent)");
+
+    // Performance metrics
+    // Use simulated returns with positive drift for Sharpe test
+    auto sim_ret = simulate_returns({0.0005}, build_cov_matrix({0.01}, QMatrix<double>(1,1,1.0)), 252, 99);
+    auto m = compute_metrics(sim_ret[0], 0.0, 252.0);
+    check(m.sharpe > 0.0, "Positive drift -> positive Sharpe");
+
+    // Constant positive returns: zero drawdown
+    std::vector<double> flat_ret(100, 0.001);
+    auto m2 = compute_metrics(flat_ret, 0.0, 252.0);
+    check_approx(m2.max_drawdown, 0.0, 1e-10, "No drawdown for constant returns");
+
+    // Stress testing
+    std::vector<double> sw = {0.5, 0.5};
+    std::vector<std::pair<std::string, std::vector<double>>> scenarios = {
+        {"Crash", {-0.20, -0.10}},
+        {"Rally", {0.15, 0.05}},
+    };
+    auto stress = stress_test(sw, scenarios);
+    check_approx(stress[0].portfolio_pnl, -0.15, 1e-10, "Stress test crash P&L");
+    check_approx(stress[1].portfolio_pnl, 0.10, 1e-10, "Stress test rally P&L");
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -472,6 +544,7 @@ int main() {
     test_american_mc();
     test_barrier_options();
     test_multi_asset();
+    test_risk_management();
 
     std::cout << "\n" << std::string(52, '=') << "\n"
               << "  Results: " << tests_passed << " passed, "
