@@ -1,148 +1,179 @@
 # QuantPricer — Multi-Model Derivatives Pricing Engine
 
-A production-grade C++17 derivatives pricing library implementing Monte Carlo, Finite Difference, and analytical methods for European, exotic, jump-diffusion, and stochastic volatility models. Built from first principles with clean OOP architecture, custom numerical solvers, and comprehensive test coverage.
+A comprehensive C++17 quantitative finance library covering derivatives pricing, risk management, fixed income, and market microstructure. Built over 15 days as a systematic learning project.
 
-## Why This Project Matters for HFT/Quant Roles
+**17 header modules | 142 tests | 11 showcase plots | 15 example programs**
 
-| Signal | What It Demonstrates |
-|---|---|
-| **C++17 mastery** | Templates, RAII, move semantics, smart pointers, `constexpr`, STL algorithms |
-| **Numerical methods** | Monte Carlo, FDM (explicit/implicit/Crank-Nicolson), root-finding, matrix decompositions |
-| **Financial mathematics** | Black-Scholes, Greeks, Heston, Merton jump-diffusion, implied volatility surfaces |
-| **Software architecture** | Inheritance hierarchies, polymorphism, design patterns (Strategy, Prototype, Template Method) |
-| **Testing discipline** | 43 automated tests validating pricing accuracy, convergence, and numerical stability |
-| **Performance awareness** | Variance reduction, antithetic variates, solver convergence analysis, timing benchmarks |
+```
+make release     # build everything
+make run-tests   # 142 tests, 0 failures
+make showcase    # generate all plots below
+```
+
+---
+
+## Results at a Glance
+
+| Method | Price | Error vs BS |
+|--------|-------|-------------|
+| **Black-Scholes (analytic)** | 10.4506 | — |
+| **Monte Carlo (500k paths)** | 10.4413 | 0.009 |
+| **FDM Crank-Nicolson (400x2000)** | 10.4515 | 0.001 |
+| **Binomial Tree (N=1000)** | 10.4486 | 0.002 |
+| **Heston MC (100k paths)** | 10.423 | stoch vol |
+| **American Put (tree)** | 6.090 | EE premium = 0.52 |
+
+*ATM European Call: S=100, K=100, r=5%, T=1y, σ=20%*
+
+---
+
+## Volatility Surface
+
+Three correlation values showing how `ρ` controls the implied vol skew in the Heston model.
+
+![Vol Surface](showcase_plots/01_vol_surface_3rho.png)
+
+- **ρ = -0.9**: steep negative skew (crash protection expensive)
+- **ρ = -0.5**: moderate skew (most realistic for equities)
+- **ρ = 0.0**: symmetric smile (no leverage effect)
+
+![Vol Smile](showcase_plots/02_vol_smile.png)
+
+---
+
+## Greeks Dashboard
+
+All five first-order Greeks computed analytically from Black-Scholes.
+
+![Greeks](showcase_plots/03_greeks_dashboard.png)
+
+---
+
+## Monte Carlo Convergence
+
+Price convergence and standard error at three volatility levels (σ=15%, 25%, 40%). SE follows the theoretical O(1/√N) rate.
+
+![MC Convergence](showcase_plots/04_mc_convergence.png)
+
+---
+
+## Model Comparison — BS vs Heston vs Merton
+
+Heston (stochastic vol, ρ=-0.7) produces a skew. Merton (jumps) produces fatter tails. Both depart from BS flat vol in different ways.
+
+![Model Comparison](showcase_plots/05_model_comparison.png)
+
+---
+
+## Barrier Options
+
+Down-and-out/in call prices at three volatility levels (σ=15%, 25%, 35%). Higher vol = more likely to hit the barrier = cheaper knock-out.
+
+![Barrier](showcase_plots/06_barrier_analysis.png)
+
+---
+
+## Correlation Trade — Multi-Asset Options
+
+The key structured products insight: best-of decreases with ρ, worst-of increases, basket increases. At ρ=1 all converge. Right panel shows basket vol → σ√ρ as N→∞.
+
+![Correlation](showcase_plots/07_correlation_trade.png)
+
+---
+
+## American Options — Early Exercise Premium
+
+American put vs European put at three interest rate levels (r=2%, 5%, 10%). Higher rates = larger early exercise premium.
+
+![American](showcase_plots/08_american_options.png)
+
+---
+
+## Finite Difference Method
+
+Crank-Nicolson solution (400×2000 grid) overlaid on BS analytic. Error < 0.001 for both calls and puts.
+
+![FDM](showcase_plots/09_fdm_solution.png)
+
+---
+
+## Yield Curves & Rate Models
+
+Left: three Nelson-Siegel curve shapes (normal, flat, inverted). Right: Vasicek vs CIR model-implied yield curves.
+
+![Yield Curves](showcase_plots/10_yield_curves.png)
+
+---
+
+## Payoff Profiles
+
+Classic call, put, and straddle payoffs at expiry (dotted) vs present value with time value (solid).
+
+![Payoffs](showcase_plots/11_payoff_profiles.png)
+
+---
 
 ## Architecture
 
 ```
-quantpricer/
-├── include/
-│   ├── payoff/payoff.h          # PayOff hierarchy (abstract base, call, put, digital, power)
-│   ├── option/option.h          # Option, Heston, Merton, FDM parameter structs
-│   ├── matrix/matrix.h          # Template matrix + LU, Thomas, Cholesky solvers
-│   ├── rng/rng.h                # RNG hierarchy (LCG, MT19937) + statistical distributions
-│   ├── mc/monte_carlo.h         # MC engine: European, Asian, jump-diffusion, Heston
-│   ├── greeks/black_scholes.h   # Analytic BS pricing + all Greeks
-│   ├── greeks/greeks_engine.h   # FD bump-and-reprice + MC pathwise Greeks
-│   ├── vol/implied_vol.h        # Implied vol: bisection, Newton-Raphson, vol surface
-│   └── fdm/fdm.h                # PDE solver: explicit, implicit, Crank-Nicolson
-├── src/quantpricer.cpp          # Library compilation unit
-├── examples/
-│   ├── main_demo.cpp            # Full showcase of all modules
-│   ├── mc_european.cpp          # European MC convergence study
-│   ├── mc_exotic.cpp            # Asian options + jump-diffusion
-│   ├── fdm_solver.cpp           # FDM pricing with CSV output
-│   ├── greeks_engine.cpp        # 3-method Greeks comparison
-│   ├── vol_surface.cpp          # Implied volatility surface from Heston
-│   ├── heston_pricer.cpp        # Heston sensitivity analysis
-│   └── jump_diffusion.cpp       # Jump intensity parameter study
-├── tests/test_runner.cpp        # 43 automated validation tests
-├── CMakeLists.txt               # CMake build configuration
-└── Makefile                     # Simple make-based build
+include/
+  payoff/         PayOff hierarchy (call, put, digital, power)
+  option/         VanillaOption, HestonParams, MertonJumpParams
+  greeks/         BS analytics + FD + MC Greeks engine
+  mc/             European, Asian, Heston, Merton MC + Longstaff-Schwartz
+  fdm/            Crank-Nicolson FDM solver
+  tree/           CRR binomial tree (European + American)
+  vol/            Implied vol (Newton-Raphson, bisection) + vol surface
+  barrier/        8 barrier types (Haug analytic) + MC + BGK correction
+  multi_asset/    Basket, best-of, worst-of, Margrabe + Cholesky MC
+  risk/           VaR, CVaR, Sharpe/Sortino/Calmar, stress testing
+  fixed_income/   Yield curves, bootstrapping, Nelson-Siegel, bonds, duration/DV01
+  rates/          Vasicek, CIR, Hull-White + bond options
+  orderbook/      CLOB matching engine (price-time priority)
+  matrix/         QMatrix, LU, Thomas, Cholesky decomposition
+  rng/            Mersenne Twister, Box-Muller, correlated normals
 ```
 
-## Chapter-to-Code Mapping
+## Build
 
-Every module directly implements concepts from **"C++ For Quantitative Finance"** by Michael Halls-Moore (QuantStart):
-
-| Chapter | Topic | Files | Key Concepts Implemented |
-|---|---|---|---|
-| **3** | First QF C++ Program | `payoff.h`, `option.h` | VanillaOption class, OOP, constructors, const correctness, pass-by-ref |
-| **4** | PayOff Hierarchies & Inheritance | `payoff.h` | Abstract base class, pure virtual `operator()`, virtual destructors, polymorphic cloning |
-| **5** | Generic Programming & Templates | `matrix.h` | `QMatrix<T>` template class, default template parameters, template specialization |
-| **6** | Standard Template Library | Throughout | `std::vector`, `std::function`, iterators, `<algorithm>`, `<numeric>` |
-| **7** | Function Objects | `greeks_engine.h`, `implied_vol.h` | Functor pattern (`operator()`), `std::function`, lambda callbacks |
-| **8** | Matrix Classes | `matrix.h` | Custom matrix with STL storage, operator overloading (+, -, *, transpose), Frobenius norm |
-| **9** | Numerical Linear Algebra | `matrix.h` | LU decomposition (partial pivoting), Thomas tridiagonal algorithm, Cholesky decomposition |
-| **10** | European MC | `monte_carlo.h`, `black_scholes.h` | Risk-neutral GBM simulation, antithetic variates, analytic BS benchmark |
-| **11** | Greeks | `greeks_engine.h` | Analytic formulae (Δ,Γ,ν,Θ,ρ), FD bump-and-reprice, MC pathwise (IPA) |
-| **12** | Asian/Path-Dependent MC | `monte_carlo.h` | Path generation, arithmetic/geometric averaging, OOP option design |
-| **13** | Implied Volatility | `implied_vol.h` | Interval bisection, Newton-Raphson with Vega, volatility surface construction |
-| **14** | Random Number Generation | `rng.h` | RNG class hierarchy, LCG implementation, Mersenne Twister, Box-Muller, inverse CDF |
-| **15** | Jump-Diffusion Models | `monte_carlo.h`, `option.h` | Merton model, Poisson jumps, jump compensator, log-normal jump sizes |
-| **16** | Stochastic Volatility | `monte_carlo.h`, `option.h` | Heston model, Euler discretisation, correlated Brownians via Cholesky, Feller condition |
-| **17** | Finite Difference Methods | `fdm.h` | BS PDE discretisation, explicit/implicit/Crank-Nicolson theta-scheme, Thomas solver integration, grid convergence |
-
-## Build & Run
-
-### Requirements
-- C++17 compiler (GCC 8+, Clang 7+, MSVC 2019+)
-- No external dependencies — header-only design with STL only
-
-### Using Make
 ```bash
-make release          # Build everything with -O3
-make run-demo         # Build and run full demo
-make run-tests        # Build and run test suite
-make clean            # Clean build artifacts
+# Requirements: C++17 compiler, Python 3 with numpy, pandas, matplotlib (for plots)
+make release        # optimized build (-O3)
+make debug          # debug build with AddressSanitizer
+make run-tests      # run 142 tests
+make showcase       # generate all plots above
+make dashboard      # interactive Streamlit dashboard (localhost:8501)
+make viz            # legacy static plot generation
 ```
 
-### Using CMake
-```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-./quantpricer_demo    # Full demo
-./test_runner          # Test suite
-```
+## Daily Progression
 
-### Manual Compilation
-```bash
-g++ -std=c++17 -O3 -I include src/quantpricer.cpp examples/main_demo.cpp -o demo -lm
-./demo
-```
+| Day | Topic | Key Concepts |
+|-----|-------|-------------|
+| 1 | OOP & PayOff Hierarchy | Inheritance, virtual functions, clone pattern |
+| 2 | Matrix & Linear Algebra | Templates, LU, Thomas algorithm, Cholesky |
+| 3 | Implied Volatility | Newton-Raphson, bisection root-finding |
+| 4 | Random Number Generation | Mersenne Twister, Box-Muller, statistical distributions |
+| 5 | Black-Scholes & European MC | Analytic pricing, antithetic variates |
+| 6 | Greeks Engine | Analytic, finite difference, MC pathwise Greeks |
+| 7 | Asian & Path-Dependent | Arithmetic/geometric averaging, path generation |
+| 8 | Jump-Diffusion | Merton model, Poisson jumps, compensator |
+| 9 | Heston Stochastic Vol | Euler discretization, full truncation, Cholesky correlation |
+| 10 | Barrier Options | Haug analytic (8 types), BGK continuity correction |
+| 11 | Multi-Asset Options | Basket, best-of, worst-of, Margrabe exchange formula |
+| 12 | Risk Management | VaR, CVaR, Sharpe/Sortino/Calmar, stress testing |
+| 13 | Fixed Income | Yield curves, bootstrapping, Nelson-Siegel, duration, DV01 |
+| 14 | Interest Rate Models | Vasicek, CIR (Feller condition), Hull-White, bond options |
+| 15 | Order Book | CLOB, price-time priority matching, limit/market orders |
 
-## Key Results
+## Key References
 
-### Pricing Accuracy
-| Model | MC Price | Analytic/Ref | Std Error | Paths |
-|---|---|---|---|---|
-| European Call (GBM) | 10.4413 | 10.4506 | 0.0146 | 500,000 |
-| Arithmetic Asian | 5.7750 | — | 0.0179 | 200,000 |
-| Heston (ρ=-0.7) | 10.4080 | 10.4506 (BS) | 0.0274 | 200,000 |
-| FDM Crank-Nicolson | 10.4544 | 10.4506 | — | 200×1000 grid |
-
-### Greeks Validation (3 independent methods)
-| Greek | Analytic | Finite Diff | MC Pathwise |
-|---|---|---|---|
-| Delta | 0.6368 | 0.6367 | 0.6367 |
-| Gamma | 0.0188 | 0.0188 | — |
-| Vega | 37.524 | 37.524 | 37.482 |
-
-### Implied Volatility Recovery
-| Method | σ Recovered | Iterations | Time |
-|---|---|---|---|
-| Bisection | 0.25000000 | 33 | 2.7 μs |
-| Newton-Raphson | 0.25000000 | 2 | 0.2 μs |
-
-### FDM Grid Convergence (Crank-Nicolson)
-| N_space | N_time | Error vs Analytic |
-|---|---|---|
-| 50 | 250 | 0.063 |
-| 200 | 1000 | 0.004 |
-| 800 | 4000 | 0.0002 |
-
-## Design Decisions
-
-1. **Header-heavy design**: Most code is in headers for template support and inlining — matches how quant libraries like Eigen and QuantLib are structured.
-
-2. **Smart pointers for ownership**: `std::unique_ptr<PayOff>` with `clone()` for polymorphic copying — no raw `new`/`delete` anywhere.
-
-3. **Template matrix class**: `QMatrix<T>` works with any numeric type — enables potential future extension to `std::complex<double>` for Fourier pricing.
-
-4. **Theta-scheme FDM**: Unified solver handles explicit (θ=0), Crank-Nicolson (θ=0.5), and implicit (θ=1) via a single parameter — cleaner than separate solver classes.
-
-5. **Three independent Greeks methods**: Validates correctness through cross-comparison — if analytic, FD, and MC agree, the implementation is almost certainly correct.
-
-## Suggested 2-3 Week Development Timeline
-
-| Week | Focus | Deliverables |
-|---|---|---|
-| **Week 1** | Core infrastructure | PayOff hierarchy, Matrix class, RNG, BS analytics, basic MC |
-| **Week 2** | Advanced models | Asian MC, Heston, Merton jump-diffusion, FDM solver, Greeks engine |
-| **Week 3** | Polish & extensions | Implied vol surface, test suite, convergence analysis, README, profiling |
-
-## License
-
-MIT
+- Joshi, *C++ Design Patterns and Derivatives Pricing* (Cambridge, 2008)
+- Glasserman, *Monte Carlo Methods in Financial Engineering* (Springer, 2003)
+- Haug, *The Complete Guide to Option Pricing Formulas* (2007)
+- Hull, *Options, Futures, and Other Derivatives* (Pearson, 2018)
+- Duffy, *Finite Difference Methods in Financial Engineering* (Wiley, 2006)
+- Lord, Koekkoek & Van Dijk, *A Comparison of Biased Simulation Schemes for SV Models* (2010)
+- Broadie, Glasserman & Kou, *Continuity Correction for Discrete Barrier Options* (1997)
+- Margrabe, *The Value of an Option to Exchange One Asset for Another* (1978)
+- Artzner et al., *Coherent Measures of Risk* (1999)
