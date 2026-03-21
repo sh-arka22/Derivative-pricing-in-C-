@@ -19,6 +19,7 @@
 #include "multi_asset/multi_asset.h"
 #include "risk/risk.h"
 #include "fixed_income/fixed_income.h"
+#include "rates/rate_models.h"
 
 #include <iostream>
 #include <cmath>
@@ -594,6 +595,65 @@ void test_fixed_income() {
     check_approx(pr, 0.05, 0.002, "Par rate on flat curve ~ flat rate");
 }
 
+void test_rate_models() {
+    std::cout << "\n=== Rate Models Tests (Day 14) ===\n";
+
+    using namespace rates;
+
+    // Vasicek: P(0,0) = 1
+    VasicekParams vp(0.05, 0.5, 0.05, 0.015);
+    check_approx(vasicek_bond_price(0.0, vp), 1.0, 1e-10, "Vasicek P(0,0) = 1");
+
+    // Vasicek: P(0,T) < 1 for T > 0
+    check(vasicek_bond_price(5.0, vp) < 1.0, "Vasicek P(0,5) < 1");
+    check(vasicek_bond_price(5.0, vp) > 0.0, "Vasicek P(0,5) > 0");
+
+    // Vasicek: zero rate at T→0 should approach r0
+    check_approx(vasicek_zero_rate(0.001, vp), vp.r0, 0.001, "Vasicek r(0) ~ r0");
+
+    // Vasicek: conditional mean at t=0 is r0
+    check_approx(vasicek_mean(0.0, vp), vp.r0, 1e-10, "Vasicek E[r(0)] = r0");
+
+    // Vasicek: conditional mean converges to theta
+    check_approx(vasicek_mean(100.0, vp), vp.theta, 0.001, "Vasicek E[r(inf)] ~ theta");
+
+    // CIR: P(0,0) = 1
+    CIRParams cp(0.05, 0.5, 0.05, 0.05);
+    check_approx(cir_bond_price(0.0, cp), 1.0, 1e-10, "CIR P(0,0) = 1");
+
+    // CIR: P(0,T) < 1
+    check(cir_bond_price(5.0, cp) < 1.0, "CIR P(0,5) < 1");
+
+    // CIR Feller condition
+    check(cp.feller_satisfied(), "CIR Feller satisfied (sigma=0.05)");
+    CIRParams cp_bad(0.05, 0.5, 0.05, 0.30);
+    check(!cp_bad.feller_satisfied(), "CIR Feller violated (sigma=0.30)");
+
+    // MC Vasicek: should match analytic (within SE)
+    auto paths = simulate_vasicek(vp, 5.0, 60, 100000);
+    auto mc = mc_bond_price(paths, 5.0);
+    double anal = vasicek_bond_price(5.0, vp);
+    check_approx(mc.price, anal, 3.0 * mc.std_error,
+                 "MC Vasicek matches analytic");
+
+    // Bond option: put-call parity
+    double T_opt = 1.0, S_opt = 5.0, X = 0.82;
+    double call = vasicek_bond_call(T_opt, S_opt, X, vp);
+    double put = vasicek_bond_put(T_opt, S_opt, X, vp);
+    double P_T = vasicek_bond_price(T_opt, vp);
+    double P_S = vasicek_bond_price(S_opt, vp);
+    double parity_err = std::abs((call - put) - (P_S - X * P_T));
+    check(parity_err < 1e-10, "Bond option put-call parity");
+
+    // Bond call price positive
+    check(call > 0.0, "Bond call price positive");
+
+    // Hull-White B(tau) matches Vasicek B(tau)
+    double B_hw = hw_B(5.0, 0.5);
+    double B_vas = vasicek_B(5.0, 0.5);
+    check_approx(B_hw, B_vas, 1e-10, "HW B(tau) = Vasicek B(tau)");
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -618,6 +678,7 @@ int main() {
     test_multi_asset();
     test_risk_management();
     test_fixed_income();
+    test_rate_models();
 
     std::cout << "\n" << std::string(52, '=') << "\n"
               << "  Results: " << tests_passed << " passed, "
