@@ -14,3 +14,4 @@ Makefile.cmake
 .claude
 *.pdf
 .DS_Store
+PAPER_TRADING_PLAN.md
