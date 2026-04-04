@@ -17,6 +17,7 @@ set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -fsanitize=address -fno-omit-frame-pointer")
 # Core Library
 # ============================================================================
 file(GLOB_RECURSE LIB_SOURCES "src/*.cpp")
+list(FILTER LIB_SOURCES EXCLUDE REGEX "paper_trader\\.cpp$")
 add_library(quantpricer STATIC ${LIB_SOURCES})
 target_include_directories(quantpricer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(quantpricer PRIVATE -Wall -Wextra -Wpedantic)
@@ -71,6 +72,44 @@ target_link_libraries(rate_models PRIVATE quantpricer)
 
 add_executable(orderbook_demo examples/orderbook_demo.cpp)
 target_link_libraries(orderbook_demo PRIVATE quantpricer)
+
+# ============================================================================
+# Paper Trading Bot (Self-Simulated — no network deps)
+# ============================================================================
+
+# nlohmann/json — prefer system install, fallback to FetchContent
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG        v3.11.3)
+    FetchContent_MakeAvailable(json)
+endif()
+
+add_executable(paper_trader src/paper_trader.cpp)
+target_link_libraries(paper_trader PRIVATE
+    quantpricer
+    nlohmann_json::nlohmann_json)
+target_include_directories(paper_trader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# ============================================================================
+# Sample Data Generator (Day 2)
+# ============================================================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_sample_data.cpp")
+    add_executable(generate_sample_data tools/generate_sample_data.cpp)
+    target_link_libraries(generate_sample_data PRIVATE quantpricer)
+    target_include_directories(generate_sample_data PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+endif()
+
+# ============================================================================
+# Backtest Runner (Day 13)
+# ============================================================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/run_backtest.cpp")
+    add_executable(run_backtest tools/run_backtest.cpp)
+    target_link_libraries(run_backtest PRIVATE quantpricer nlohmann_json::nlohmann_json)
+    target_include_directories(run_backtest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+endif()
 
 # ============================================================================
 # Test Suite

@@ -1,0 +1,61 @@
+{
+    "data_files": {
+        "AAPL": "data/AAPL.csv",
+        "SPY":  "data/SPY.csv",
+        "TSLA": "data/TSLA.csv",
+        "MSFT": "data/MSFT.csv",
+        "NVDA": "data/NVDA.csv",
+        "AMZN": "data/AMZN.csv",
+        "GOOG": "data/GOOG.csv",
+        "META": "data/META.csv"
+    },
+
+    "strategy": "mean_reversion",
+
+    "strategy_params": {
+        "mr_lookback": 20,
+        "mr_entry_z": 2.0,
+        "mr_exit_z": 0.5,
+        "mr_position_size": 100,
+
+        "dh_risk_free": 0.05,
+        "dh_vol": 0.20,
+        "dh_time_to_expiry": 1.0,
+        "dh_contracts": 10,
+        "dh_rebalance_threshold": 5,
+
+        "mom_fast_period": 10,
+        "mom_slow_period": 50,
+        "mom_position_size": 100,
+
+        "pt_lookback": 60,
+        "pt_entry_z": 2.0,
+        "pt_exit_z": 0.5,
+        "pt_position_size": 100,
+
+        "gs_vol": 0.20,
+        "gs_time_to_expiry": 0.25,
+        "gs_contracts": 5,
+        "gs_rebalance_threshold": 10
+    },
+
+    "simulation": {
+        "spread_bps": 10.0,
+        "num_levels": 5,
+        "base_qty_per_level": 100,
+        "slippage_bps": 2.0,
+        "initial_capital": 100000.0
+    },
+
+    "risk_limits": {
+        "max_position_notional": 50000,
+        "max_portfolio_notional": 200000,
+        "max_loss": 5000,
+        "max_order_size": 500,
+        "max_var_99": 10000,
+        "max_open_orders": 20
+    },
+
+    "log_dir": "logs",
+    "verbose": true
+}

@@ -9,7 +9,7 @@ BUILDDIR  := build
 LIBSRC    := $(SRCDIR)/quantpricer.cpp
 
 # Targets
-.PHONY: all demo test examples clean release debug dashboard viz
+.PHONY: all demo test examples clean release debug dashboard viz paper-trade download-data generate-data backtest smoke-test
 
 all: release
 
@@ -66,6 +66,34 @@ dashboard: release $(BUILDDIR)/pricer_service
 viz: release $(BUILDDIR)/generate_data
 	./$(BUILDDIR)/generate_data
 	python3 tools/visualize.py
+
+paper-trade: build/paper_trader
+	./build/paper_trader config/paper_trading.json
+
+build/paper_trader: src/paper_trader.cpp include/trading/*.h
+	@mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -Wno-dev && make paper_trader
+
+# Download real OHLCV data from Yahoo Finance (primary)
+download-data:
+	python3 tools/download_data.py
+
+# Generate synthetic OHLCV data via GBM (fallback if offline)
+generate-data: build/generate_sample_data
+	./build/generate_sample_data
+
+build/generate_sample_data: tools/generate_sample_data.cpp
+	@mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -Wno-dev && make generate_sample_data
+
+# Run backtest comparison across all strategies (Day 13)
+backtest: build/run_backtest
+	./build/run_backtest config/paper_trading.json
+
+build/run_backtest: tools/run_backtest.cpp
+	@mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -Wno-dev && make run_backtest
+
+# Full smoke test (Day 14)
+smoke-test: generate-data
+	bash tools/smoke_test.sh
 
 clean:
 	rm -rf $(BUILDDIR) *.csv plots/
