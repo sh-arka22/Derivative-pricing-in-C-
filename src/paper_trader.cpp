@@ -7,12 +7,14 @@
 // Day 1: Verify config loads and all engine deps compile
 // Day 2: Verify MarketDataReplay, OptionDataReplay, MarketSnapshot,
 //         find_best_option, fill_option_at_market
+// Day 3: Verify SimulatedExchange — seed liquidity, submit orders, get fills
 // ============================================================================
 
 #include "trading/config.h"
 #include "trading/market_data.h"
 #include "trading/market_snapshot.h"
 #include "trading/option_types.h"
+#include "trading/simulated_exchange.h"
 
 // Verify quantpricer headers work
 #include "greeks/black_scholes.h"
@@ -254,6 +256,84 @@ int main(int argc, char* argv[]) {
         break;  // one symbol is enough for verification
     }
 
-    std::cout << "\nAll Day 2 systems operational. Ready for Day 3." << std::endl;
+    // ================================================================
+    // Day 3: Simulated Exchange — Seed Liquidity + Execute Orders
+    // ================================================================
+
+    std::cout << "\n=== Day 3: Simulated Exchange Verification ===" << std::endl;
+
+    trading::SimulatedExchange exchange(config.sim);
+
+    // Use first date's bars to seed and test
+    for (auto& [sym, bar] : first_bars) {
+        exchange.seed_liquidity(sym, bar);
+        auto& ebook = exchange.get_book(sym);
+
+        std::cout << "\n[EXCHANGE] " << sym << " seeded around $" << bar.close
+                  << "  bid=" << std::setprecision(2) << ebook.best_bid()
+                  << " ask=" << ebook.best_ask()
+                  << " spread=$" << ebook.spread()
+                  << " (" << std::setprecision(1) << (ebook.spread() / bar.close * 10000.0)
+                  << " bps)\n";
+        std::cout << std::setprecision(4);
+
+        // Show book depth
+        auto bids = ebook.get_bids(5);
+        auto asks = ebook.get_asks(5);
+        for (auto ait = asks.rbegin(); ait != asks.rend(); ++ait) {
+            std::cout << "    ASK $" << std::setprecision(2) << ait->price
+                      << "  x " << ait->quantity << "\n";
+        }
+        std::cout << "    ---- spread ----\n";
+        for (auto& b : bids) {
+            std::cout << "    BID $" << std::setprecision(2) << b.price
+                      << "  x " << b.quantity << "\n";
+        }
+        std::cout << std::setprecision(4);
+
+        // Test market buy
+        trading::OrderRequest buy_order{sym, orderbook::Side::Buy, 50, 0.0};
+        auto buy_fills = exchange.submit_order(buy_order, first_date);
+        double total_cost = 0;
+        int total_qty = 0;
+        for (auto& f : buy_fills) {
+            total_cost += f.price * f.quantity;
+            total_qty += f.quantity;
+        }
+        std::cout << "[EXCHANGE] MKT BUY 50 " << sym << " → "
+                  << buy_fills.size() << " fill(s), "
+                  << total_qty << " shares, avg=$"
+                  << std::setprecision(2) << (total_qty > 0 ? total_cost / total_qty : 0)
+                  << "\n";
+
+        // Test market sell
+        trading::OrderRequest sell_order{sym, orderbook::Side::Sell, 150, 0.0};
+        auto sell_fills = exchange.submit_order(sell_order, first_date);
+        total_cost = 0;
+        total_qty = 0;
+        for (auto& f : sell_fills) {
+            total_cost += f.price * f.quantity;
+            total_qty += f.quantity;
+        }
+        std::cout << "[EXCHANGE] MKT SELL 150 " << sym << " → "
+                  << sell_fills.size() << " fill(s), "
+                  << total_qty << " shares, avg=$"
+                  << std::setprecision(2) << (total_qty > 0 ? total_cost / total_qty : 0)
+                  << "\n";
+        std::cout << std::setprecision(4);
+
+        // Test limit order (should rest if price is away from market)
+        double away_price = bar.close - bar.close * 0.01;  // 1% below close
+        trading::OrderRequest limit_order{sym, orderbook::Side::Buy, 100, away_price};
+        auto limit_fills = exchange.submit_order(limit_order, first_date);
+        std::cout << "[EXCHANGE] LMT BUY 100 " << sym << " @ $"
+                  << std::setprecision(2) << away_price
+                  << " → " << limit_fills.size() << " fills (expected 0 — resting)\n";
+        std::cout << std::setprecision(4);
+
+        break;  // one symbol is enough
+    }
+
+    std::cout << "\nAll Day 3 systems operational. Ready for Day 4." << std::endl;
     return 0;
 }
