@@ -4,14 +4,24 @@ build_*/
 *.o
 *.a
 *.so
+*.dylib
 *.dSYM/
+*.out
+
+# CMake (out-of-source covered by build/, these catch in-source builds)
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile.cmake
+Makefile
+
+# Python bytecode
+__pycache__/
+*.pyc
 
 # Generated data & logs (recreated by tools)
 data/*.csv
+data/options/
+showcase_data/
 logs/
 
 # IDE / system
@@ -20,9 +30,12 @@ logs/
 .DS_Store
 
 # Claude Code internals
-.claude
+.claude/
 
 # Generated documents
 *.pdf
-
 docs/
+
+# Plan docs (generated, not source)
+PAPER_TRADING_PLAN.md
+POSITION_MANAGER_PLAN.md

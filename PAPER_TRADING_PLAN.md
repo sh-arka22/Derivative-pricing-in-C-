@@ -51,15 +51,21 @@
 
 **Key principle:** Single-threaded, deterministic. Same CSV + same config = identical output every run.
 
+**Data model:** Two data sources merged into a single `MarketSnapshot` per date:
+- **OHLCV bars** (`data/*.csv`) — daily stock prices, used by all strategies
+- **Option chains** (`data/options/*_options.csv`) — real bid/ask, IV, Greeks from philippdubach/options-data. Used by options strategies (delta hedge, gamma scalp, market maker). Equity-only strategies ignore this.
+
 **Execution model:**
-1. `MarketDataReplay` loads CSVs and iterates bar-by-bar across all symbols
-2. For each bar: seed the `SimulatedExchange` with fresh liquidity
-3. Pass the bar to the active `Strategy` → it returns `vector<OrderRequest>`
-4. `RiskGuard` filters each order (reject if limits breached)
-5. Approved orders go to `SimulatedExchange` → returns `vector<Fill>`
-6. `PositionTracker` updates holdings and P&L from fills
-7. `TradeLogger` logs everything to terminal + CSV
-8. After all bars: compute session summary via `risk::compute_metrics()`
+1. `MarketDataReplay` loads OHLCV CSVs; `OptionDataReplay` loads option chain CSVs
+2. For each date: build `MarketSnapshot` merging bars + option chains
+3. Seed `SimulatedExchange` with fresh liquidity from bars
+4. Pass `MarketSnapshot` to the active `Strategy` → it returns stock and option orders
+5. `RiskGuard` filters each order (reject if limits breached)
+6. Stock orders go to `SimulatedExchange` → returns `vector<Fill>`
+7. Option orders fill at real bid/ask from chain data (buy at ask, sell at bid)
+8. `PositionTracker` updates stock + option holdings and P&L from fills
+9. `TradeLogger` logs everything to terminal + CSV
+10. After all bars: compute session summary via `risk::compute_metrics()`
 
 ---
 
@@ -195,25 +201,35 @@ namespace trading {
 
 | Day | File | Namespace | Purpose |
 |-----|------|-----------|---------|
-| 1 | `tools/download_data.py` | — | Downloads real OHLCV from Yahoo Finance (primary data source) |
-| 2 | `include/trading/market_data.h` | `trading` | Bar struct, CSV parser, multi-symbol replay |
+| 1 | `tools/download_data.py` | — | Downloads real OHLCV from Yahoo Finance |
+| 1 | `tools/download_options_data.py` | — | Downloads real option chains from philippdubach/options-data (Parquet → CSV) |
+| 2 | `include/trading/market_data.h` | `trading` | Bar, OptionQuote, OptionChain, MarketDataReplay, OptionDataReplay |
+| 2 | `include/trading/market_snapshot.h` | `trading` | MarketSnapshot — unified per-date view (bars + option chains) |
+| 2 | `include/trading/option_types.h` | `trading` | OptionOrderRequest, OptionFill, find_best_option(), fill_option_at_market() |
 | 2 | `tools/generate_sample_data.cpp` | — | GBM-based synthetic OHLCV CSV generator (fallback if offline) |
-| 3 | `include/trading/simulated_exchange.h` | `trading` | Wraps OrderBook, seeds liquidity, returns fills |
-| 4 | `include/trading/position_tracker.h` | `trading` | Holdings, avg cost, realized/unrealized P&L |
-| 5 | `include/trading/strategy.h` | `trading` | Abstract Strategy base class |
-| 5 | `include/trading/strategies/mean_reversion.h` | `trading` | Z-score mean reversion strategy |
+| 3 | `include/trading/simulated_exchange.h` | `trading` | Wraps OrderBook, seeds liquidity, returns stock fills |
+| 4 | `include/trading/position_tracker.h` | `trading` | Stock + option holdings, avg cost, realized/unrealized P&L, portfolio Greeks |
+| 5 | `include/trading/strategy.h` | `trading` | Abstract Strategy base class (receives MarketSnapshot) |
+| 5 | `include/trading/strategies/mean_reversion.h` | `trading` | Z-score mean reversion strategy (OHLCV only) |
 | 6 | `include/trading/risk_guard.h` | `trading` | Pre-trade + real-time risk checks |
 | 7 | `include/trading/logging.h` | `trading` | CSV trade log + terminal output + session summary |
-| 8 | `src/paper_trader.cpp` | — | **REWRITE** — full event loop |
-| 9 | `include/trading/strategies/delta_hedge.h` | `trading` | Delta-neutral hedging strategy |
-| 9 | `include/trading/strategies/momentum.h` | `trading` | Dual MA crossover strategy |
+| 8 | `src/paper_trader.cpp` | — | **REWRITE** — full event loop with MarketSnapshot |
+| 9 | `include/trading/strategies/delta_hedge.h` | `trading` | Delta hedge using **real option chain data** (market delta, real bid/ask) |
+| 9 | `include/trading/strategies/momentum.h` | `trading` | Dual MA crossover strategy (OHLCV only) |
 | 10 | — | — | Polish, SIGINT handler, smoke test (mid-project checkpoint) |
-| 11 | `include/trading/strategies/pairs_trading.h` | `trading` | Statistical arbitrage pairs strategy |
-| 12 | `include/trading/strategies/gamma_scalp.h` | `trading` | Gamma scalping (long straddle + delta hedge) |
+| 11 | `include/trading/strategies/pairs_trading.h` | `trading` | Statistical arbitrage pairs strategy (OHLCV only) |
+| 12 | `include/trading/strategies/gamma_scalp.h` | `trading` | Gamma scalping using **real option chain data** (market Greeks, real straddle prices) |
 | 13 | `include/trading/backtester.h` | `trading` | Multi-strategy comparison framework |
 | 13 | `tools/run_backtest.cpp` | — | Backtest runner executable |
 | 14 | `include/trading/report_generator.h` | `trading` | Equity curve, trade analysis, rolling metrics CSV |
-| 15 | `include/trading/strategies/market_maker.h` | `trading` | Capstone: market maker with spread capture + P&L attribution |
+| 15 | `include/trading/strategies/market_maker.h` | `trading` | Capstone: **options market maker** — quotes real options, vol surface, delta hedge, P&L by Greek |
+
+### Data files:
+
+| File | Source | Purpose |
+|------|--------|---------|
+| `data/AAPL.csv` ... `data/META.csv` | Yahoo Finance via `download_data.py` | Daily OHLCV for 8 symbols |
+| `data/options/AAPL_options.csv` ... `data/options/META_options.csv` | philippdubach/options-data via `download_options_data.py` | Daily option chain snapshots (bid, ask, IV, Greeks, volume, OI) |
 
 ### Header pattern (all new headers follow this):
 
@@ -242,9 +258,10 @@ config = Config::from_json_file(config_path)
 override config.strategy if --strategy given
 
 replay = MarketDataReplay(config.data_files)
+option_replay = OptionDataReplay(config.option_data_files)    // NEW: real option chains
 exchange = SimulatedExchange(config.sim)
 tracker = PositionTracker(config.sim.initial_capital)
-strategy = create_strategy(config.strategy, config)  // factory function
+strategy = create_strategy(config.strategy, config)
 risk_guard = RiskGuard(config.risk_limits)
 logger = TradeLogger(config.log_dir, config.verbose)
 
@@ -252,30 +269,42 @@ strategy->init(config)
 logger.log_header(config)
 
 while (replay.has_next()) {
-    auto bars = replay.next()  // map<string, Bar> for this timestamp
+    auto bars = replay.next()
+    std::string date = bars.begin()->second.date
 
-    // 1. Update marks
-    for (auto& [sym, bar] : bars) {
-        tracker.on_price(sym, bar.close)
-        exchange.seed_liquidity(sym, bar, config.sim)
+    // 1. Build unified MarketSnapshot (OHLCV + option chains for this date)
+    MarketSnapshot snapshot;
+    snapshot.date = date;
+    snapshot.bars = bars;
+    if (!config.option_data_files.empty()) {
+        snapshot.option_chains = option_replay.get_chains(date);  // may be empty
     }
 
-    // 2. Risk monitoring (pre-strategy)
+    // 2. Update marks (stock + option positions)
+    for (auto& [sym, bar] : bars) {
+        tracker.on_price(sym, bar.close)
+        exchange.seed_liquidity(sym, bar)
+    }
+    for (auto& [sym, chain] : snapshot.option_chains) {
+        tracker.update_option_marks(chain)    // mark option positions to market
+    }
+
+    // 3. Risk monitoring (pre-strategy)
     auto risk_status = risk_guard.monitor(tracker)
     if (risk_status.kill_switch) {
         logger.log_kill_switch(risk_status)
         break
     }
 
-    // 3. Strategy generates signals
-    auto orders = strategy->on_bar(bars, tracker, exchange)
+    // 4. Strategy generates signals (receives full snapshot)
+    auto [stock_orders, option_orders] = strategy->on_bar(snapshot, tracker, exchange)
 
-    // 4. Risk guard filters orders
-    auto approved = risk_guard.check_orders(orders, tracker)
+    // 5. Risk guard filters stock orders
+    auto approved = risk_guard.check_orders(stock_orders, tracker)
 
-    // 5. Execute approved orders
+    // 6. Execute stock orders via SimulatedExchange
     for (auto& order : approved) {
-        auto fills = exchange.submit_order(order)
+        auto fills = exchange.submit_order(order, date)
         for (auto& fill : fills) {
             tracker.on_fill(fill)
             strategy->on_fill(fill)
@@ -283,8 +312,19 @@ while (replay.has_next()) {
         }
     }
 
-    // 6. Log bar summary
-    logger.log_bar(bars, tracker, risk_guard)
+    // 7. Execute option orders at real bid/ask from chain data
+    for (auto& opt_order : option_orders) {
+        auto opt_fill = fill_option_at_market(opt_order, snapshot, date)
+        if (opt_fill.has_value()) {
+            tracker.on_option_fill(opt_fill.value())
+            strategy->on_option_fill(opt_fill.value())
+            logger.log_option_fill(opt_fill.value(), tracker)
+        }
+    }
+
+    // 8. Log bar summary
+    logger.log_bar(snapshot, tracker, risk_guard)
+    tracker.on_day_end(date)
 }
 
 // Session summary
@@ -300,84 +340,124 @@ logger.log_session_summary(tracker, metrics)
 
 ### Day 1: Setup + Config + Data ✅ DONE
 - `include/trading/config.h` — complete (SimulationParams, RiskLimits, StrategyParams, Config)
-- `config/paper_trading.json` — complete (all strategy params, risk limits, sim params)
+- `config/paper_trading.json` — complete (all strategy params, risk limits, sim params, option_data_files)
 - `src/paper_trader.cpp` — stub that verifies all engine deps compile
 - `tools/download_data.py` — downloads real OHLCV from Yahoo Finance via yfinance
-- CMakeLists.txt — paper_trader target, GLOB excludes paper_trader.cpp from library
-- Makefile — paper-trade, download-data, generate-data, backtest, smoke-test targets
-- Directories created: `include/trading/strategies/`, `data/`, `logs/`
-- .gitignore — tracks docs/, config, plan; ignores data/*.csv, logs/, build/
+- `tools/download_options_data.py` — downloads real option chains from philippdubach/options-data (Parquet → CSV)
+- Real option chain data for 8 symbols in `data/options/` (~304 MB total, 2025 data, max 90 DTE)
+- CMakeLists.txt, Makefile, directories, .gitignore — all set up
 
-### Day 2: Market Data + Sample Data Generator
-- **Files:** `include/trading/market_data.h`, `tools/generate_sample_data.cpp`
+### Day 2: Market Data + MarketSnapshot + Option Types
+- **Files:** `include/trading/market_data.h` ✅ (already created: Bar, OptionQuote, OptionChain, MarketDataReplay, OptionDataReplay)
+- **New files:** `include/trading/market_snapshot.h`, `include/trading/option_types.h`
+- **Also:** `tools/generate_sample_data.cpp` (synthetic fallback)
 - **Spec:** `docs/specs/day02_market_data.md`
-- **Verification:** Load 3 CSVs, iterate in sync, print each bar
+- **Key change from original:** MarketSnapshot bundles bars + option chains. OptionOrderRequest/OptionFill for option execution. find_best_option() helper for ATM selection.
+- **Verification:** Load OHLCV + option chains, iterate in sync, print snapshot summary showing "SPY: O=589 H=591 L=587 C=590, options: 3400 contracts, 17 expirations"
 
-### Day 3: Simulated Exchange
+### Day 3: Simulated Exchange (+ option fill mechanics)
 - **Files:** `include/trading/simulated_exchange.h`
 - **Spec:** `docs/specs/day03_simulated_exchange.md`
-- **Verification:** Seed book, submit orders, get fills with correct prices
+- **Key change from original:** Add `fill_option_at_market()` — fills option orders at real bid/ask from chain data (buy at ask, sell at bid). No order book needed for options; the CSV bid/ask IS the market.
+- **Verification:** Seed stock book + submit stock orders as before. Also: fill option order, verify buy fills at ask price, sell fills at bid price.
 
-### Day 4: Position Tracker
+### Day 4: Position Tracker (+ option positions)
 - **Files:** `include/trading/position_tracker.h`
 - **Spec:** `docs/specs/day04_position_tracker.md`
-- **Verification:** Buy/sell cycle, verify avg cost and realized P&L
+- **Key change from original:** Add `OptionPosition` struct (symbol, expiration, strike, is_call, contracts, avg_cost, mark, Greeks). Add `on_option_fill()`, `update_option_marks(chain)`, `net_delta(symbol)`, `portfolio_greeks()`.
+- **Verification:** Stock buy/sell cycle as before. Also: option buy at ask → mark to market next day → sell at bid → verify realized P&L includes spread cost.
 
 ### Day 5: Strategy Base + Mean Reversion
 - **Files:** `include/trading/strategy.h`, `include/trading/strategies/mean_reversion.h`
 - **Spec:** `docs/specs/day05_strategy_mean_reversion.md`
-- **Verification:** Run strategy on sample data, verify signal generation
+- **Key change from original:** `on_bar()` signature takes `const MarketSnapshot&` instead of `const std::map<std::string, Bar>&`. Returns `StrategyOrders` struct containing both `vector<OrderRequest>` (stock) and `vector<OptionOrderRequest>` (options). Equity-only strategies return empty option orders.
+- **Verification:** Mean reversion unchanged in behavior — accesses `snapshot.bars`, ignores `snapshot.option_chains`.
 
 ### Day 6: Risk Guard
 - **Files:** `include/trading/risk_guard.h`
 - **Spec:** `docs/specs/day06_risk_guard.md`
-- **Verification:** Reject oversized orders, trigger kill switch on max loss
+- **No change from original.** Risk checks apply to stock orders. Option risk managed via portfolio Greeks limits (net delta, net gamma thresholds) — added as optional checks.
+- **Verification:** Same as before + verify option position notional counted in portfolio notional.
 
 ### Day 7: Logging
 - **Files:** `include/trading/logging.h`
 - **Spec:** `docs/specs/day07_logging.md`
-- **Verification:** CSV file written, terminal output formatted correctly
+- **Key change from original:** Add `log_option_fill()` for option trades. Add Greeks summary in bar log when option positions exist.
+- **Verification:** CSV includes option fills with strike, expiry, type, fill price, IV.
 
 ### Day 8: Main Loop Integration
 - **Files:** `src/paper_trader.cpp` (rewrite)
 - **Spec:** `docs/specs/day08_main_loop.md`
-- **Verification:** Full end-to-end run: CSV → bars → strategy → fills → P&L → summary
+- **Key change from original:** Construct `OptionDataReplay`, build `MarketSnapshot` per date, pass to strategy, handle both stock and option fills, update option marks daily.
+- **Verification:** Full run: CSV + option chains → MarketSnapshot → strategy → stock fills + option fills → P&L → summary. Run with mean_reversion (OHLCV only) to verify backward compatibility.
 
 ### Day 9: Delta Hedge + Momentum Strategies
 - **Files:** `include/trading/strategies/delta_hedge.h`, `include/trading/strategies/momentum.h`
 - **Spec:** `docs/specs/day09_strategies.md`
-- **Verification:** Run each strategy, verify different trading behavior
+- **MAJOR CHANGE — Delta Hedge now uses REAL option chain data:**
+  - On first bar: `find_best_option(chain, spot, dh_target_dte, call)` → buy contracts at real ask price
+  - Each bar: look up same (exp, strike) in chain → read `OptionQuote.delta` directly (NOT bs::delta_call with hardcoded vol)
+  - Hedge with stock using market delta
+  - Track option P&L from real mark changes, stock P&L from tracker
+  - Roll option when DTE < 5 (sell at bid, buy new at ask — captures real roll cost)
+- **Momentum unchanged** — OHLCV only, no options.
+- **Config change:** `dh_vol` and `dh_time_to_expiry` replaced by `dh_target_dte = 30`
+- **Verification:** Run delta hedge on AAPL. Output must show: "Selected AAPL $245C exp 2025-02-21 at ask=$5.30, market delta=0.55". Each day: "delta=0.52, target=-520 shares, current=-480, rebalance: SELL 40"
 
 ### Day 10: Polish + Mid-Project Checkpoint
 - **Files:** Minor updates to paper_trader.cpp, CMakeLists.txt
 - **Spec:** `docs/specs/day10_polish.md`
-- **Verification:** SIGINT handler, all 3 strategies pass, risk guard stress test
+- **Verification:** SIGINT handler, all 4 strategies pass (mean_rev, momentum, delta_hedge, pairs), risk guard stress test. Delta hedge P&L uses real option marks.
 
 ### Day 11: Pairs Trading Strategy
 - **Files:** `include/trading/strategies/pairs_trading.h`
 - **Spec:** `docs/specs/day11_pairs_trading.md`
-- **Verification:** Simultaneous long/short on two symbols, spread z-score signals
+- **No change from original.** OHLCV-only strategy.
+- **Verification:** Simultaneous long/short on two symbols, spread z-score signals.
 
 ### Day 12: Gamma Scalping Strategy
 - **Files:** `include/trading/strategies/gamma_scalp.h`
 - **Spec:** `docs/specs/day12_gamma_scalping.md`
-- **Verification:** Straddle delta-hedging, gamma/theta P&L attribution printout
+- **MAJOR CHANGE — uses REAL option chain data:**
+  - On first bar: buy ATM call + ATM put from chain at `gs_target_dte` → real straddle at ask prices
+  - Each bar: read delta, gamma, theta directly from `OptionQuote` for both legs
+  - Straddle delta = call.delta + put.delta → hedge with stock
+  - P&L attribution from REAL Greeks: gamma P&L = 0.5 × Γ × ΔS², theta P&L = Θ × dt, actual = mark change, residual = vega + higher order
+  - Report realized vol vs implied vol comparison at on_stop()
+  - Roll when DTE < 5
+- **Config change:** `gs_vol` and `gs_time_to_expiry` replaced by `gs_target_dte = 30`
+- **Verification:** Run on AAPL. Output must show: "Straddle: $245C + $245P, entry=$6.55 (real ask), gamma=0.10, theta=-0.15". Daily: gamma P&L, theta cost, net. Final: "realized vol=0.28 vs implied vol=0.22 → gamma profit"
 
 ### Day 13: Backtesting Framework
 - **Files:** `include/trading/backtester.h`, `tools/run_backtest.cpp`
 - **Spec:** `docs/specs/day13_backtesting.md`
-- **Verification:** All 5 strategies compared side-by-side, ranked by Sharpe
+- **Verification:** All 6 strategies compared side-by-side, ranked by Sharpe. Options strategies show additional metrics: total spread cost, gamma/theta ratio.
 
 ### Day 14: Performance Report Generator
 - **Files:** `include/trading/report_generator.h`
 - **Spec:** `docs/specs/day14_report_generator.md`
-- **Verification:** Equity curve CSV, trade analysis, rolling metrics
+- **Key addition:** For options strategies, report includes: P&L by Greek (delta, gamma, theta, vega, spread), IV vs realized vol chart data, roll costs.
+- **Verification:** Equity curve CSV, trade analysis, rolling metrics, Greek P&L attribution.
 
-### Day 15: Market Maker Strategy (Capstone)
+### Day 15: Options Market Maker Strategy (Capstone)
 - **Files:** `include/trading/strategies/market_maker.h`
 - **Spec:** `docs/specs/day15_market_maker.md`
-- **Verification:** Limit orders, spread capture, P&L attribution (spread income vs inventory cost), full smoke test
-- **This is the capstone** — ties EVERY module together: BS pricing, Greeks, implied vol, risk, orderbook
+- **COMPLETE REWRITE — now an OPTIONS market maker, not a stock market maker:**
+  - Each bar: read full option chain, select `mm_quote_expiries` × `mm_strikes_around_atm` options to quote
+  - For each option: `theo = quote.mark`, `my_bid = theo - edge`, `my_ask = theo + edge`
+  - Fill logic: capture edge when quote is within market spread
+  - After fills: compute net delta across all option positions → delta hedge with stock
+  - **P&L attribution by Greek** (the interview talking point):
+    - Spread capture = sum of (fill price - theo) across all fills
+    - Delta P&L = net_delta × ΔS
+    - Gamma P&L = 0.5 × net_gamma × ΔS²
+    - Theta P&L = net_theta × dt
+    - Vega P&L = net_vega × ΔIV
+  - Manages inventory across strikes/expirations
+  - Vol surface from market IVs drives pricing
+- **Config:** `mm_quote_expiries=2, mm_strikes_around_atm=3, mm_edge_bps=5.0, mm_max_option_inventory=20, mm_delta_hedge_threshold=50.0`
+- **This is the capstone** — ties EVERY module together: BS pricing, Greeks, implied vol, vol surface, risk, orderbook, real option chain data, P&L attribution
+- **Verification:** Run on SPY. Output must show: quotes placed per bar, fills with real spread, net Greeks, delta hedges, daily P&L breakdown by Greek component. Final: "Spread income: $X, Delta P&L: $Y, Gamma P&L: $Z, Theta P&L: $W"
 
 ---
 
@@ -649,6 +729,12 @@ return returns
 ### 6.5 Strategy (strategy.h)
 
 ```cpp
+// Return type for on_bar — strategies can generate stock AND option orders
+struct StrategyOrders {
+    std::vector<OrderRequest> stock_orders;
+    std::vector<OptionOrderRequest> option_orders;  // from option_types.h
+};
+
 class Strategy {
 public:
     virtual ~Strategy() = default;
@@ -656,17 +742,18 @@ public:
     // Called once before the main loop
     virtual void init(const Config& config) = 0;
 
-    // Called each bar — return orders to submit
-    // bars: current bar for each symbol
-    // tracker: read-only access to positions
-    // exchange: read-only access to order books (for spread, mid_price, etc.)
-    virtual std::vector<OrderRequest> on_bar(
-        const std::map<std::string, Bar>& bars,
+    // Called each bar — receives unified MarketSnapshot (OHLCV + option chains)
+    // Equity strategies use snapshot.bars only; options strategies also use snapshot.option_chains
+    virtual StrategyOrders on_bar(
+        const MarketSnapshot& snapshot,
         const PositionTracker& tracker,
         const SimulatedExchange& exchange) = 0;
 
-    // Called when a fill occurs (for strategy bookkeeping)
+    // Called when a stock fill occurs (for strategy bookkeeping)
     virtual void on_fill(const Fill& fill) {}
+
+    // Called when an option fill occurs
+    virtual void on_option_fill(const OptionFill& fill) {}
 
     // Called at end of simulation
     virtual void on_stop() {}
@@ -735,59 +822,98 @@ For each symbol with a bar:
         Close position: sell if long, buy if short
 ```
 
-### 6.7 DeltaHedgeStrategy (strategies/delta_hedge.h)
+### 6.7 DeltaHedgeStrategy (strategies/delta_hedge.h) — REAL OPTION DATA
 
 ```cpp
 class DeltaHedgeStrategy : public Strategy {
 public:
     void init(const Config& config) override;
 
-    std::vector<OrderRequest> on_bar(
-        const std::map<std::string, Bar>& bars,
+    StrategyOrders on_bar(
+        const MarketSnapshot& snapshot,
         const PositionTracker& tracker,
         const SimulatedExchange& exchange) override;
 
+    void on_option_fill(const OptionFill& fill) override;
+    void on_stop() override;
     std::string name() const override { return "delta_hedge"; }
 
 private:
-    // Synthetic option parameters (ATM call)
-    double strike_ = 0.0;       // set to first bar's close
+    // Option selection params (from config)
+    int target_dte_ = 30;              // target days to expiry
+    int contracts_ = 10;               // option contracts to hold
+    int rebalance_threshold_ = 5;      // shares diff before rehedging
     double risk_free_ = 0.05;
-    double vol_ = 0.20;
-    double time_to_expiry_ = 1.0;  // 1 year, decays each bar
-    int option_contracts_ = 10;    // each contract = 100 shares
-    double rebalance_threshold_ = 5;  // shares — rebalance if hedge off by this much
 
-    double bars_processed_ = 0;
-    double total_bars_ = 252.0;    // assume 252 trading days
-    bool initialized_ = false;
+    // Tracked option position (selected from real chain data)
+    std::string tracked_expiration_;    // "YYYY-MM-DD"
+    double tracked_strike_ = 0.0;
+    double entry_mark_ = 0.0;          // what we paid (ask price)
+    double current_mark_ = 0.0;        // current market mark
+    bool position_open_ = false;
+
+    // P&L tracking
+    double option_pnl_ = 0.0;         // realized option P&L (from rolls)
+    double total_spread_cost_ = 0.0;   // cumulative bid-ask cost
+    int rolls_ = 0;
 };
 ```
 
-**Delta hedge algorithm:**
+**Delta hedge algorithm (REAL DATA):**
 ```
 For the FIRST symbol only (primary underlying):
-    If not initialized:
-        strike_ = bar.close (ATM)
-        initialized_ = true
+    spot = snapshot.bars[symbol].close
+    chain = snapshot.option_chains[symbol]  // real option chain for today
 
-    // Decay time to expiry
-    bars_processed_++
-    T_remaining = time_to_expiry_ * (1.0 - bars_processed_ / total_bars_)
-    if T_remaining <= 0.001: return {}  // expired
+    If chain is empty: skip (no option data for this date)
 
-    S = bar.close
-    delta = bs::delta_call(S, strike_, risk_free_, T_remaining, vol_)
+    If no position open:
+        // SELECT: find ATM call closest to target_dte
+        best = find_best_option(chain, spot, target_dte_, is_call=true)
+        if best == nullptr: skip
 
-    // We are "long" option_contracts_ * 100 synthetic calls
-    // Need to be SHORT (delta * contracts * 100) shares to hedge
-    target_shares = -round(delta * option_contracts_ * 100)
+        // BUY: generate OptionOrderRequest (buy contracts at ask)
+        option_orders.push_back({symbol, best->expiration, best->strike,
+                                 is_call=true, contracts_, is_buy=true})
+        tracked_expiration_ = best->expiration
+        tracked_strike_ = best->strike
+        entry_mark_ = best->ask
+        position_open_ = true
+        RETURN (no hedge on entry bar)
+
+    // LOOK UP current option in today's chain
+    quote = find_quote(chain, tracked_expiration_, tracked_strike_, is_call=true)
+    if quote == nullptr:
+        // Option no longer in chain (expired or delisted) → force roll
+        // Generate sell order, then select new option next bar
+        position_open_ = false
+        RETURN
+
+    // READ MARKET DELTA (not computed from BS!)
+    delta = quote->delta       // THIS is the key change
+    current_mark_ = quote->mark
+
+    // ROLL CHECK: if DTE < 5, close and reopen
+    dte = quote->days_to_expiry_from(snapshot.date)
+    if dte < 5:
+        // SELL current option at bid
+        option_orders.push_back({symbol, tracked_expiration_, tracked_strike_,
+                                 is_call=true, contracts_, is_buy=false})
+        position_open_ = false
+        rolls_++
+        RETURN (will select new option next bar)
+
+    // HEDGE: same logic as before, but delta comes from MARKET
+    target_shares = -round(delta * contracts_ * 100)
     current_shares = tracker.get_position(symbol).quantity
 
     diff = target_shares - current_shares
     if abs(diff) >= rebalance_threshold_:
-        if diff > 0: BUY abs(diff) at market
-        else:        SELL abs(diff) at market
+        if diff > 0: stock_orders.push_back(BUY abs(diff) at market)
+        else:        stock_orders.push_back(SELL abs(diff) at market)
+
+on_stop():
+    Print: "Option P&L: $X, Stock Hedge P&L: $Y, Total Spread Cost: $Z, Rolls: N"
 ```
 
 ### 6.8 MomentumStrategy (strategies/momentum.h)
@@ -1089,16 +1215,61 @@ Equity = Cash + sum(qty * market_price) for all positions
 
 ## 8. Configuration Schema
 
-### 8.1 paper_trading.json (existing, no changes needed)
+### 8.1 paper_trading.json
 
 ```json
 {
     "data_files": {
         "AAPL": "data/AAPL.csv",
         "SPY": "data/SPY.csv",
-        "TSLA": "data/TSLA.csv"
+        "TSLA": "data/TSLA.csv",
+        "MSFT": "data/MSFT.csv",
+        "NVDA": "data/NVDA.csv",
+        "AMZN": "data/AMZN.csv",
+        "GOOG": "data/GOOG.csv",
+        "META": "data/META.csv"
+    },
+    "option_data_files": {
+        "AAPL": "data/options/AAPL_options.csv",
+        "SPY":  "data/options/SPY_options.csv",
+        "TSLA": "data/options/TSLA_options.csv",
+        "MSFT": "data/options/MSFT_options.csv",
+        "NVDA": "data/options/NVDA_options.csv",
+        "AMZN": "data/options/AMZN_options.csv",
+        "GOOG": "data/options/GOOG_options.csv",
+        "META": "data/options/META_options.csv"
     },
     "strategy": "mean_reversion",
+    "strategy_params": {
+        "mr_lookback": 20,
+        "mr_entry_z": 2.0,
+        "mr_exit_z": 0.5,
+        "mr_position_size": 100,
+
+        "dh_risk_free": 0.05,
+        "dh_target_dte": 30,
+        "dh_contracts": 10,
+        "dh_rebalance_threshold": 5,
+
+        "mom_fast_period": 10,
+        "mom_slow_period": 50,
+        "mom_position_size": 100,
+
+        "pt_lookback": 60,
+        "pt_entry_z": 2.0,
+        "pt_exit_z": 0.5,
+        "pt_position_size": 100,
+
+        "gs_target_dte": 30,
+        "gs_contracts": 5,
+        "gs_rebalance_threshold": 10,
+
+        "mm_quote_expiries": 2,
+        "mm_strikes_around_atm": 3,
+        "mm_edge_bps": 5.0,
+        "mm_max_option_inventory": 20,
+        "mm_delta_hedge_threshold": 50.0
+    },
     "simulation": {
         "spread_bps": 10.0,
         "num_levels": 5,
@@ -1127,7 +1298,7 @@ Equity = Cash + sum(qty * market_price) for all positions
 Default config_path: "config/paper_trading.json"
 --strategy overrides the JSON "strategy" field
 
-Valid strategy names: "mean_reversion", "delta_hedge", "momentum", "pairs_trading", "gamma_scalp"
+Valid strategy names: "mean_reversion", "delta_hedge", "momentum", "pairs_trading", "gamma_scalp", "market_maker"
 --report generates detailed CSV analytics (equity curve, trade analysis, rolling metrics)
 ```
 
@@ -1139,20 +1310,20 @@ Valid strategy names: "mean_reversion", "delta_hedge", "momentum", "pairs_tradin
 
 | Day | Command | Expected Output |
 |-----|---------|-----------------|
-| 2 | `make paper-trade` | Prints all bars for all symbols, counts match CSV row counts |
-| 3 | `make paper-trade` | Seeds books, shows bid/ask spreads, fills test orders |
-| 4 | `make paper-trade` | Buy 100 → Sell 50 → shows correct avg_cost and realized P&L |
-| 5 | `make paper-trade` | Mean reversion generates buy/sell signals with z-scores |
-| 6 | `make paper-trade` | Oversized order rejected, kill switch triggers at loss limit |
-| 7 | `make paper-trade` | CSV file in logs/, terminal shows formatted output |
-| 8 | `make paper-trade` | Full run: 252 bars, trades, session summary with Sharpe |
-| 9 | `make paper-trade -- --strategy delta_hedge` | Delta hedge shows different trading pattern |
+| 2 | `make paper-trade` | Prints bars + option chain summary ("SPY: 252 bars, 3400 options/day") |
+| 3 | `make paper-trade` | Seeds stock books, fills stock + option orders at real bid/ask |
+| 4 | `make paper-trade` | Stock + option P&L tracking, avg cost, mark-to-market |
+| 5 | `make paper-trade` | Mean reversion signals (OHLCV only, ignores option chains) |
+| 6 | `make paper-trade` | Oversized order rejected, kill switch, option notional in portfolio check |
+| 7 | `make paper-trade` | CSV with stock + option fills, Greeks summary in bar log |
+| 8 | `make paper-trade` | Full run with MarketSnapshot, all strategies work |
+| 9 | `--strategy delta_hedge` | Selects real ATM call from chain, reads market delta, hedges, shows option P&L |
 | 10 | Ctrl+C during run | Clean shutdown with partial summary |
-| 11 | `--strategy pairs_trading` | Simultaneous long/short on AAPL+SPY, spread z-scores |
-| 12 | `--strategy gamma_scalp` | Frequent hedging, gamma/theta attribution on_stop() |
-| 13 | `./build/run_backtest` | 5 strategies compared, ranked by Sharpe |
-| 14 | `--strategy mean_reversion --report` | CSV files in logs/ (equity curve, trades, rolling) |
-| 15 | `--strategy market_maker` | Limit orders, spread capture, P&L attribution printout |
+| 11 | `--strategy pairs_trading` | Simultaneous long/short on AAPL+SPY (OHLCV only) |
+| 12 | `--strategy gamma_scalp` | Real straddle from chain, market Greeks, gamma/theta attribution, realized vs implied vol |
+| 13 | `./build/run_backtest` | 6 strategies compared, ranked by Sharpe |
+| 14 | `--strategy delta_hedge --report` | P&L by Greek, IV vs realized vol, roll costs |
+| 15 | `--strategy market_maker` | Options quotes, fills at real spread, net Greeks, delta hedge, P&L by Greek component |
 
 ### Smoke test script (Day 15 — final):
 

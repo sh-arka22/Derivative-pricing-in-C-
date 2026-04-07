@@ -143,8 +143,11 @@ inline void from_json(const nlohmann::json& j, StrategyParams& sp) {
 // ============================================================================
 
 struct Config {
-    // Data: symbol -> CSV file path
+    // Data: symbol -> CSV file path (OHLCV)
     std::map<std::string, std::string> data_files;
+
+    // Options: symbol -> CSV file path (option chains)
+    std::map<std::string, std::string> option_data_files;
 
     // Simulation
     SimulationParams sim;
@@ -192,6 +195,13 @@ struct Config {
             cfg.data_files[sym] = path_val.get<std::string>();
         }
 
+        // Optional: option chain data files
+        if (j.contains("option_data_files") && j["option_data_files"].is_object()) {
+            for (auto& [sym, path_val] : j["option_data_files"].items()) {
+                cfg.option_data_files[sym] = path_val.get<std::string>();
+            }
+        }
+
         // Optional overrides
         if (j.contains("simulation"))   cfg.sim = j.at("simulation").get<SimulationParams>();
         if (j.contains("risk_limits"))  cfg.risk_limits = j.at("risk_limits").get<RiskLimits>();
@@ -209,6 +219,11 @@ struct Config {
         std::cout << "  Data Files:" << std::endl;
         for (auto& [sym, path] : data_files)
             std::cout << "    " << sym << " -> " << path << std::endl;
+        if (!option_data_files.empty()) {
+            std::cout << "  Option Data:" << std::endl;
+            for (auto& [sym, path] : option_data_files)
+                std::cout << "    " << sym << " -> " << path << std::endl;
+        }
         std::cout << "  Strategy:   " << strategy << std::endl;
         std::cout << "  Simulation:" << std::endl;
         std::cout << "    Spread:     " << sim.spread_bps << " bps" << std::endl;

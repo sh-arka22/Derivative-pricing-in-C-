@@ -10,6 +10,17 @@
         "META": "data/META.csv"
     },
 
+    "option_data_files": {
+        "AAPL": "data/options/AAPL_options.csv",
+        "SPY":  "data/options/SPY_options.csv",
+        "TSLA": "data/options/TSLA_options.csv",
+        "MSFT": "data/options/MSFT_options.csv",
+        "NVDA": "data/options/NVDA_options.csv",
+        "AMZN": "data/options/AMZN_options.csv",
+        "GOOG": "data/options/GOOG_options.csv",
+        "META": "data/options/META_options.csv"
+    },
+
     "strategy": "mean_reversion",
 
     "strategy_params": {
