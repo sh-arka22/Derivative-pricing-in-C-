@@ -8,6 +8,7 @@
 // Day 2: Verify MarketDataReplay, OptionDataReplay, MarketSnapshot,
 //         find_best_option, fill_option_at_market
 // Day 3: Verify SimulatedExchange — seed liquidity, submit orders, get fills
+// Day 4: Verify PositionTracker — stock + option P&L, equity invariant
 // ============================================================================
 
 #include "trading/config.h"
@@ -15,6 +16,7 @@
 #include "trading/market_snapshot.h"
 #include "trading/option_types.h"
 #include "trading/simulated_exchange.h"
+#include "trading/position_tracker.h"
 
 // Verify quantpricer headers work
 #include "greeks/black_scholes.h"
@@ -334,6 +336,175 @@ int main(int argc, char* argv[]) {
         break;  // one symbol is enough
     }
 
-    std::cout << "\nAll Day 3 systems operational. Ready for Day 4." << std::endl;
+    // ================================================================
+    // Day 4: Position Tracker — Stock + Option P&L Accounting
+    // ================================================================
+
+    std::cout << "\n=== Day 4: Position Tracker Verification ===" << std::endl;
+    std::cout << std::fixed << std::setprecision(2);
+
+    trading::PositionTracker tracker(config.sim.initial_capital);
+
+    // ----------------------------------------------------------------
+    // 11. Stock position P&L — all 4 cases
+    // ----------------------------------------------------------------
+
+    // Case 1: Open from flat — BUY 100 AAPL @ 185.00
+    trading::Fill buy1{"AAPL", orderbook::Side::Buy, 185.00, 100, "2025-01-02"};
+    tracker.on_fill(buy1);
+    tracker.on_price("AAPL", 185.00);
+    std::cout << "\n[CASE 1] BUY 100 AAPL @ 185.00 (open from flat):\n";
+    tracker.print_positions();
+    // Expected: qty=100, avg=185.00, cash=81500, equity=100000
+
+    // Mark-to-market: price moves up
+    tracker.on_price("AAPL", 190.00);
+    std::cout << "\n[MTM] Price -> 190.00:\n";
+    tracker.print_positions();
+    // Expected: unrealized = 100 * (190 - 185) = +500, equity = 100500
+
+    // Case 2: Add to position — BUY 50 more @ 192.00
+    trading::Fill buy2{"AAPL", orderbook::Side::Buy, 192.00, 50, "2025-01-02"};
+    tracker.on_fill(buy2);
+    tracker.on_price("AAPL", 192.00);
+    std::cout << "\n[CASE 2] BUY 50 AAPL @ 192.00 (add to long):\n";
+    tracker.print_positions();
+    // Expected: qty=150, avg = (185*100 + 192*50)/150 = 187.33
+
+    // Case 3: Partial close — SELL 60 @ 190.00
+    trading::Fill sell1{"AAPL", orderbook::Side::Sell, 190.00, 60, "2025-01-03"};
+    tracker.on_fill(sell1);
+    std::cout << "\n[CASE 3] SELL 60 AAPL @ 190.00 (partial close):\n";
+    tracker.print_positions();
+    // Expected: qty=90, avg still 187.33, realized=60*(190-187.33)=160
+
+    // Case 4: Reverse through zero — SELL 200 @ 188.00
+    // Closes remaining 90 long + opens 110 short
+    trading::Fill sell2{"AAPL", orderbook::Side::Sell, 188.00, 200, "2025-01-03"};
+    tracker.on_fill(sell2);
+    tracker.on_price("AAPL", 188.00);
+    std::cout << "\n[CASE 4] SELL 200 AAPL @ 188.00 (reverse through zero):\n";
+    tracker.print_positions();
+    // Expected: qty=-110, avg=188.00, realized=160+90*(188-187.33)=220
+
+    // Verify equity invariant
+    double expected_equity = tracker.cash() + tracker.get_position("AAPL").quantity
+                             * tracker.get_position("AAPL").market_price;
+    std::cout << "\n[INVARIANT] equity=" << tracker.total_equity()
+              << "  cash+pos=" << expected_equity
+              << "  match=" << (std::abs(tracker.total_equity() - expected_equity) < 0.01
+                                ? "YES" : "NO") << "\n";
+
+    // End of day snapshot
+    tracker.on_day_end("2025-01-02");
+    tracker.on_day_end("2025-01-03");
+    auto returns = tracker.daily_return_series();
+    std::cout << "[EQUITY] History snapshots: " << tracker.equity_history().size()
+              << "  Daily returns: " << returns.size() << "\n";
+    if (!returns.empty()) {
+        std::cout << "[EQUITY] Day 1->2 return: " << std::setprecision(4)
+                  << (returns[0] * 100.0) << "%\n";
+    }
+
+    // ----------------------------------------------------------------
+    // 12. Option position P&L
+    // ----------------------------------------------------------------
+    std::cout << std::setprecision(2);
+    std::cout << "\n--- Option Position Tests ---\n";
+
+    // Use real option data if available
+    trading::MarketDataReplay replay3(config.data_files);
+    auto test_bars = replay3.next();
+    std::string test_date = test_bars.begin()->second.date;
+
+    trading::MarketSnapshot opt_snap;
+    opt_snap.date = test_date;
+    opt_snap.bars = test_bars;
+    opt_snap.option_chains = option_replay.get_chains(test_date);
+
+    bool tested_option = false;
+    for (auto& [sym, bar] : test_bars) {
+        if (!opt_snap.has_options(sym)) continue;
+
+        auto& chain = opt_snap.option_chains.at(sym);
+        auto best = trading::find_best_option(chain, bar.close, 30, true);
+        if (!best.has_value()) continue;
+
+        auto& q = best.value();
+
+        // Buy 5 contracts of the ATM call
+        trading::OptionOrderRequest buy_req;
+        buy_req.symbol     = sym;
+        buy_req.expiration = q.expiration;
+        buy_req.strike     = q.strike;
+        buy_req.is_call    = true;
+        buy_req.contracts  = 5;
+        buy_req.is_buy     = true;
+
+        auto buy_fill = trading::fill_option_at_market(buy_req, opt_snap, test_date);
+        if (!buy_fill.has_value()) continue;
+
+        tracker.on_option_fill(buy_fill.value());
+
+        // Update marks from chain
+        tracker.update_option_marks(chain);
+
+        std::cout << "[OPT BUY] " << buy_fill->contracts << "x "
+                  << buy_fill->symbol << " $" << buy_fill->strike
+                  << (buy_fill->is_call ? "C" : "P")
+                  << " @ $" << buy_fill->price << "\n";
+        tracker.print_positions();
+
+        // Check net delta
+        std::cout << "[NET DELTA] " << sym << ": " << tracker.net_delta(sym)
+                  << " (stock=" << tracker.get_position(sym).quantity
+                  << " + option delta)\n";
+
+        // Portfolio Greeks
+        auto greeks_sum = tracker.portfolio_greeks();
+        std::cout << "[GREEKS] Portfolio: d=" << greeks_sum.delta
+                  << " g=" << greeks_sum.gamma
+                  << " t=" << greeks_sum.theta
+                  << " v=" << greeks_sum.vega << "\n";
+
+        // Sell to close — verify realized P&L
+        trading::OptionOrderRequest sell_req = buy_req;
+        sell_req.is_buy = false;
+        sell_req.contracts = 3;  // partial close
+
+        auto sell_fill = trading::fill_option_at_market(sell_req, opt_snap, test_date);
+        if (sell_fill.has_value()) {
+            tracker.on_option_fill(sell_fill.value());
+            std::cout << "\n[OPT SELL] " << sell_fill->contracts << "x @ $"
+                      << sell_fill->price << " (partial close)\n";
+            tracker.print_positions();
+        }
+
+        tested_option = true;
+        break;
+    }
+
+    if (!tested_option) {
+        std::cout << "[OPT] No option data available — skipping option tests\n";
+    }
+
+    // Final equity invariant check
+    double final_equity = tracker.total_equity();
+    double manual_equity = tracker.cash();
+    for (auto& [sym, pos] : tracker.positions()) {
+        manual_equity += pos.quantity * pos.market_price;
+    }
+    for (auto& [key, pos] : tracker.option_positions()) {
+        manual_equity += pos.contracts * 100.0 * pos.mark;
+    }
+    std::cout << "\n[FINAL INVARIANT] equity=" << final_equity
+              << "  manual=" << manual_equity
+              << "  match=" << (std::abs(final_equity - manual_equity) < 0.01
+                                ? "YES" : "NO") << "\n";
+
+    std::cout << "\nTotal trades: " << tracker.total_trades()
+              << "  Total P&L: $" << tracker.total_pnl() << "\n";
+
+    std::cout << "\nAll Day 4 systems operational. Ready for Day 5." << std::endl;
     return 0;
 }
