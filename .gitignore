@@ -8,6 +8,14 @@ build_*/
 *.dSYM/
 *.out
 
+# Compiled example binaries (built outside build/)
+bates_pricer
+heston_pricer
+merton_pricer
+
+# Generated CSV data at project root (recreated by examples)
+*.csv
+
 # CMake (out-of-source covered by build/, these catch in-source builds)
 CMakeCache.txt
 CMakeFiles/
