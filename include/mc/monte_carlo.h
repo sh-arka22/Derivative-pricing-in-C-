@@ -316,4 +316,93 @@ inline MCResult mc_heston(
 // Demo result: rho=-0.7 -> Heston price ~ 10.41 vs BS = 10.45 (ATM close)
 // but implied vol smile: ~23.2% at K=80 to ~17.3% at K=120
 
+// ============================================================================
+// Bates Model MC — Heston + Merton Jumps (Bates, 1996)
+//
+// The Bates model augments Heston's stochastic volatility with log-normal
+// jumps in the spot process, giving it the ability to capture:
+//   1. Stochastic vol  → smile curvature (wings controlled by xi, rho)
+//   2. Jump risk       → short-maturity skew and excess kurtosis
+//
+// SDE system (risk-neutral):
+//   dS = (r - λk)*S*dt + sqrt(v)*S*dW_S + S*(e^J - 1)*dN
+//   dv = kappa*(theta - v)*dt + xi*sqrt(v)*dW_v
+//   Corr(dW_S, dW_v) = rho
+//
+// where:
+//   N(t) = Poisson process with intensity λ
+//   J ~ N(μ_j, σ_j²) — log-jump size
+//   k = E[e^J - 1] = exp(μ_j + σ_j²/2) - 1  — jump compensator
+//
+// Key interview insight:
+//   λ=0 → Bates collapses to Heston (no jumps)
+//   xi=0,λ=0 → collapses to Black-Scholes
+//   xi=0,λ>0 → collapses to Merton jump-diffusion
+//   This nesting makes Bates the "union" of the two most important
+//   extensions to Black-Scholes, and a popular calibration target.
+// ============================================================================
+
+/// Bates model Monte Carlo with Euler discretisation
+inline MCResult mc_bates(
+    const PayOff& payoff,
+    const BatesParams& params,
+    size_t num_paths, size_t n_steps = 252,
+    unsigned long seed = 42)
+{
+    MersenneTwisterRNG rng(seed);
+
+    double dt = params.T / n_steps;
+    double sqrt_dt = std::sqrt(dt);
+    double discount = std::exp(-params.r * params.T);
+
+    // Jump compensator: k = E[e^J - 1] = exp(μ_j + σ_j²/2) - 1
+    double k = std::exp(params.mu_j + 0.5 * params.sigma_j * params.sigma_j) - 1.0;
+
+    // Poisson and jump-size distributions
+    std::mt19937_64 jump_engine(seed + 1);
+    std::poisson_distribution<int> poisson(params.lambda * dt);
+    std::normal_distribution<double> jump_normal(params.mu_j, params.sigma_j);
+
+    double sum = 0.0, sum_sq = 0.0;
+
+    for (size_t p = 0; p < num_paths; ++p) {
+        double S = params.S0;
+        double v = params.v0;
+
+        for (size_t i = 0; i < n_steps; ++i) {
+            // Correlated Brownian increments for asset & variance
+            auto [z1, z2] = generate_correlated_normals(rng, params.rho);
+
+            // Full truncation for variance
+            double v_pos = std::max(v, 0.0);
+            double sqrt_v = std::sqrt(v_pos);
+
+            // Jump component (identical to Merton)
+            int n_jumps = poisson(jump_engine);
+            double jump_sum = 0.0;
+            for (int j = 0; j < n_jumps; ++j)
+                jump_sum += jump_normal(jump_engine);
+
+            // Stock: log-Euler with jump-compensated drift + jumps
+            S *= std::exp((params.r - params.lambda * k - 0.5 * v_pos) * dt
+                          + sqrt_v * sqrt_dt * z1
+                          + jump_sum);
+
+            // Variance: standard Euler on CIR process (same as Heston)
+            v += params.kappa * (params.theta - v_pos) * dt
+                 + params.xi * sqrt_v * sqrt_dt * z2;
+        }
+
+        double pv = discount * payoff(S);
+        sum += pv;
+        sum_sq += pv * pv;
+    }
+
+    double mean = sum / num_paths;
+    double var = (sum_sq / num_paths) - mean * mean;
+    double se = std::sqrt(var / num_paths);
+
+    return {mean, se, mean - 1.96 * se, mean + 1.96 * se, num_paths};
+}
+
 #endif // QUANTPRICER_MONTE_CARLO_H

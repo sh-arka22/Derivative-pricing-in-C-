@@ -112,6 +112,44 @@ struct MertonJumpParams {
           sigma(vol), lambda(lam), mu_j(muj), sigma_j(sigj) {}
 };
 
+/// Bates model parameters — Heston stochastic vol + Merton jumps (Bates, 1996)
+/// dS = (r - λk)S dt + √v S dW_S + J S dN
+/// dv = κ(θ - v)dt + ξ√v dW_v,  Corr(dW_S, dW_v) = ρ
+struct BatesParams {
+    // Heston parameters
+    double S0;          // Initial spot
+    double K;           // Strike
+    double r;           // Risk-free rate
+    double T;           // Maturity
+    double v0;          // Initial variance
+    double kappa;       // Mean reversion speed of variance
+    double theta;       // Long-run variance
+    double xi;          // Vol-of-vol (σ_v)
+    double rho;         // Correlation between asset and variance Brownians
+
+    // Merton jump parameters
+    double lambda;      // Jump intensity (expected jumps per year)
+    double mu_j;        // Mean of log-jump size
+    double sigma_j;     // Std dev of log-jump size
+
+    BatesParams()
+        : S0(100.0), K(100.0), r(0.05), T(1.0),
+          v0(0.04), kappa(2.0), theta(0.04), xi(0.3), rho(-0.7),
+          lambda(1.0), mu_j(-0.05), sigma_j(0.1) {}
+
+    BatesParams(double s0, double k, double rate, double mat,
+                double var0, double kap, double th, double volofvol, double corr,
+                double lam, double muj, double sigj)
+        : S0(s0), K(k), r(rate), T(mat),
+          v0(var0), kappa(kap), theta(th), xi(volofvol), rho(corr),
+          lambda(lam), mu_j(muj), sigma_j(sigj) {}
+
+    /// Feller condition: 2*kappa*theta > xi^2 ensures variance stays positive
+    bool feller_satisfied() const {
+        return 2.0 * kappa * theta > xi * xi;
+    }
+};
+
 /// FDM mesh parameters — Ch 17.2
 struct FDMParams {
     size_t N_space;     // Number of spatial grid points
