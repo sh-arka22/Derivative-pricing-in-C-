@@ -19,6 +19,7 @@
 #include "trading/position_tracker.h"
 #include "trading/strategy.h"
 #include "trading/strategies/mean_reversion.h"
+#include "trading/risk_guard.h"
 
 // Verify quantpricer headers work
 #include "greeks/black_scholes.h"
@@ -598,6 +599,87 @@ int main(int argc, char* argv[]) {
               << "  match=" << (std::abs(strat_equity - strat_manual) < 0.01
                                 ? "YES" : "NO") << "\n";
 
-    std::cout << "\nAll Day 5 systems operational. Ready for Day 6." << std::endl;
+    // ================================================================
+    // Day 6: Risk Guard — Pre-Trade Checks + Portfolio Monitoring
+    // ================================================================
+
+    std::cout << "\n=== Day 6: Risk Guard Verification ===" << std::endl;
+    std::cout << std::fixed << std::setprecision(2);
+
+    trading::RiskGuard risk_guard(config.risk_limits);
+    trading::PositionTracker rg_tracker(100000.0);
+    rg_tracker.on_price("AAPL", 185.0);
+
+    std::cout << "[LIMITS] max_order=" << config.risk_limits.max_order_size
+              << "  max_pos=$" << config.risk_limits.max_position_notional
+              << "  max_port=$" << config.risk_limits.max_portfolio_notional
+              << "  max_loss=$" << config.risk_limits.max_loss
+              << "  max_var=$" << config.risk_limits.max_var_99 << "\n";
+
+    // Test 1: Order within limits — should approve
+    trading::OrderRequest good_order{"AAPL", orderbook::Side::Buy, 100, 0.0};
+    auto r1 = risk_guard.check_order(good_order, rg_tracker);
+    std::cout << "\n[TEST 1] BUY 100 AAPL ($18.5k): "
+              << (r1.approved ? "APPROVED" : "REJECTED: " + r1.reason) << "\n";
+
+    // Test 2: Order exceeds max_order_size (500) — should reject
+    trading::OrderRequest big_order{"AAPL", orderbook::Side::Buy, 600, 0.0};
+    auto r2 = risk_guard.check_order(big_order, rg_tracker);
+    std::cout << "[TEST 2] BUY 600 AAPL (size>500): "
+              << (r2.approved ? "APPROVED" : "REJECTED: " + r2.reason) << "\n";
+
+    // Test 3: Order breaches position notional ($50k limit)
+    // 300 * $185 = $55,500 > $50,000
+    trading::OrderRequest notional_order{"AAPL", orderbook::Side::Buy, 300, 0.0};
+    auto r3 = risk_guard.check_order(notional_order, rg_tracker);
+    std::cout << "[TEST 3] BUY 300 AAPL ($55.5k>$50k): "
+              << (r3.approved ? "APPROVED" : "REJECTED: " + r3.reason) << "\n";
+
+    // Test 4: Simulate a large loss, then check kill switch
+    // Buy 100 @ 185, price drops to 130 → unrealized = 100*(130-185) = -$5,500
+    trading::Fill rg_buy{"AAPL", orderbook::Side::Buy, 185.0, 100, "2025-01-02"};
+    rg_tracker.on_fill(rg_buy);
+    rg_tracker.on_price("AAPL", 130.0);
+    std::cout << "\n[TEST 4] After BUY 100 @ $185, price → $130:\n";
+    std::cout << "  P&L = $" << rg_tracker.total_pnl()
+              << "  (loss limit = -$" << config.risk_limits.max_loss << ")\n";
+
+    trading::OrderRequest loss_order{"AAPL", orderbook::Side::Buy, 10, 0.0};
+    auto r4 = risk_guard.check_order(loss_order, rg_tracker);
+    std::cout << "  BUY 10 more: "
+              << (r4.approved ? "APPROVED" : "REJECTED: " + r4.reason) << "\n";
+
+    // Test 5: Monitor — should trigger kill switch
+    auto status = risk_guard.monitor(rg_tracker);
+    std::cout << "\n[TEST 5] Monitor:\n";
+    std::cout << "  P&L=$" << status.total_pnl
+              << "  Notional=$" << status.portfolio_notional
+              << "  VaR=$" << status.portfolio_var
+              << "  Kill=" << (status.kill_switch ? "YES" : "NO") << "\n";
+    if (!status.message.empty()) {
+        std::cout << "  " << status.message << "\n";
+    }
+
+    // Test 6: Batch filter — mix of good and bad orders
+    std::cout << "\n[TEST 6] Batch check (3 orders):\n";
+    std::vector<trading::OrderRequest> batch = {
+        {"MSFT", orderbook::Side::Buy, 50, 0.0},   // no price set → notional=0, but loss limit blocks
+        {"AAPL", orderbook::Side::Buy, 600, 0.0},   // size limit
+        {"AAPL", orderbook::Side::Sell, 50, 0.0},   // reduces position, but loss limit
+    };
+    // Set MSFT price so notional check works
+    rg_tracker.on_price("MSFT", 430.0);
+
+    std::vector<std::pair<trading::OrderRequest, std::string>> rejections;
+    auto approved = risk_guard.check_orders(batch, rg_tracker, &rejections);
+    std::cout << "  Approved: " << approved.size()
+              << "  Rejected: " << rejections.size() << "\n";
+    for (auto& [order, reason] : rejections) {
+        std::cout << "  REJECT " << order.symbol << " "
+                  << (order.side == orderbook::Side::Buy ? "BUY" : "SELL")
+                  << " " << order.quantity << ": " << reason << "\n";
+    }
+
+    std::cout << "\nAll Day 6 systems operational. Ready for Day 7." << std::endl;
     return 0;
 }
