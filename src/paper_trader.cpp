@@ -17,6 +17,8 @@
 #include "trading/option_types.h"
 #include "trading/simulated_exchange.h"
 #include "trading/position_tracker.h"
+#include "trading/strategy.h"
+#include "trading/strategies/mean_reversion.h"
 
 // Verify quantpricer headers work
 #include "greeks/black_scholes.h"
@@ -505,6 +507,97 @@ int main(int argc, char* argv[]) {
     std::cout << "\nTotal trades: " << tracker.total_trades()
               << "  Total P&L: $" << tracker.total_pnl() << "\n";
 
-    std::cout << "\nAll Day 4 systems operational. Ready for Day 5." << std::endl;
+    // ================================================================
+    // Day 5: Strategy Base + Mean Reversion
+    // ================================================================
+
+    std::cout << "\n=== Day 5: Mean Reversion Strategy Verification ===" << std::endl;
+    std::cout << std::fixed << std::setprecision(2);
+
+    // Fresh components for strategy test
+    trading::MarketDataReplay strat_replay(config.data_files);
+    trading::OptionDataReplay strat_option_replay(config.option_data_files);
+    trading::SimulatedExchange strat_exchange(config.sim);
+    trading::PositionTracker strat_tracker(config.sim.initial_capital);
+
+    auto strategy = std::make_unique<trading::MeanReversionStrategy>();
+    strategy->init(config);
+
+    std::cout << "[STRATEGY] " << strategy->name()
+              << "  lookback=" << config.strategy_params.mr_lookback
+              << "  entry_z=" << config.strategy_params.mr_entry_z
+              << "  exit_z=" << config.strategy_params.mr_exit_z
+              << "  size=" << config.strategy_params.mr_position_size << "\n";
+
+    // Run first 30 bars
+    int bar_count = 0;
+    int signal_count = 0;
+    int fill_count = 0;
+
+    while (strat_replay.has_next() && bar_count < 30) {
+        auto bars = strat_replay.next();
+
+        // Build MarketSnapshot for this date
+        trading::MarketSnapshot snapshot;
+        snapshot.date = bars.begin()->second.date;
+        snapshot.bars = bars;
+        // option_chains left empty — equity-only strategy
+
+        // Seed exchange + update tracker prices
+        for (auto& [sym, bar] : bars) {
+            strat_tracker.on_price(sym, bar.close);
+            strat_exchange.seed_liquidity(sym, bar);
+        }
+
+        auto strategy_orders = strategy->on_bar(snapshot, strat_tracker, strat_exchange);
+
+        for (auto& order : strategy_orders.stock_orders) {
+            std::cout << "[" << snapshot.date << "] SIGNAL "
+                      << order.symbol << " "
+                      << (order.side == orderbook::Side::Buy ? "BUY" : "SELL")
+                      << " " << order.quantity << "\n";
+            signal_count++;
+
+            auto fills = strat_exchange.submit_order(order, snapshot.date);
+            for (auto& fill : fills) {
+                strat_tracker.on_fill(fill);
+                strategy->on_fill(fill);
+                fill_count++;
+            }
+        }
+
+        strat_tracker.on_day_end(snapshot.date);
+        bar_count++;
+    }
+
+    std::cout << "\n--- Day 5 Results (30 bars) ---\n";
+    std::cout << "[STATS] Bars processed: " << bar_count
+              << "  Signals: " << signal_count
+              << "  Fills: " << fill_count << "\n";
+    strat_tracker.print_positions();
+
+    // Equity curve check
+    auto strat_returns = strat_tracker.daily_return_series();
+    std::cout << "[EQUITY] Snapshots: " << strat_tracker.equity_history().size()
+              << "  Returns: " << strat_returns.size() << "\n";
+    if (strat_tracker.equity_history().size() >= 2) {
+        std::cout << "[EQUITY] Start: $" << strat_tracker.equity_history().front()
+                  << "  End: $" << strat_tracker.equity_history().back()
+                  << "  P&L: $" << (strat_tracker.equity_history().back()
+                                    - strat_tracker.equity_history().front()) << "\n";
+    }
+
+    // Invariant: equity = cash + positions
+    double strat_equity = strat_tracker.total_equity();
+    double strat_manual = strat_tracker.cash();
+    for (auto& [sym, pos] : strat_tracker.positions()) {
+        strat_manual += pos.quantity * pos.market_price;
+    }
+    std::cout << "[INVARIANT] equity=" << strat_equity
+              << "  manual=" << strat_manual
+              << "  match=" << (std::abs(strat_equity - strat_manual) < 0.01
+                                ? "YES" : "NO") << "\n";
+
+    std::cout << "\nAll Day 5 systems operational. Ready for Day 6." << std::endl;
     return 0;
 }
