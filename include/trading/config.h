@@ -104,6 +104,16 @@ struct StrategyParams {
     double gs_time_to_expiry = 0.25;
     int    gs_contracts      = 5;
     int    gs_rebalance_threshold = 10;
+
+    // Mean Reversion — OU calibration & production controls
+    double mr_max_hurst         = 0.5;    // Hurst must be below this for eligibility
+    double mr_min_half_life     = 2.0;    // min half-life days (too fast = noise)
+    double mr_max_half_life     = 42.0;   // max half-life days (too slow = not tradeable)
+    double mr_min_daily_vol     = 0.005;  // min stddev/price (skip dead markets)
+    int    mr_max_holding_mult  = 3;      // max hold = mult * half_life bars
+    int    mr_cooldown_bars     = 3;      // bars to wait after closing
+    int    mr_recalib_interval  = 5;      // OU re-estimation every N bars
+    bool   mr_adaptive_lookback = true;   // use half_life as z-score window
 };
 
 inline void from_json(const nlohmann::json& j, StrategyParams& sp) {
@@ -136,6 +146,16 @@ inline void from_json(const nlohmann::json& j, StrategyParams& sp) {
     if (j.contains("gs_time_to_expiry")) j.at("gs_time_to_expiry").get_to(sp.gs_time_to_expiry);
     if (j.contains("gs_contracts"))      j.at("gs_contracts").get_to(sp.gs_contracts);
     if (j.contains("gs_rebalance_threshold")) j.at("gs_rebalance_threshold").get_to(sp.gs_rebalance_threshold);
+
+    // Mean Reversion — OU calibration & production controls
+    if (j.contains("mr_max_hurst"))         j.at("mr_max_hurst").get_to(sp.mr_max_hurst);
+    if (j.contains("mr_min_half_life"))     j.at("mr_min_half_life").get_to(sp.mr_min_half_life);
+    if (j.contains("mr_max_half_life"))     j.at("mr_max_half_life").get_to(sp.mr_max_half_life);
+    if (j.contains("mr_min_daily_vol"))     j.at("mr_min_daily_vol").get_to(sp.mr_min_daily_vol);
+    if (j.contains("mr_max_holding_mult"))  j.at("mr_max_holding_mult").get_to(sp.mr_max_holding_mult);
+    if (j.contains("mr_cooldown_bars"))     j.at("mr_cooldown_bars").get_to(sp.mr_cooldown_bars);
+    if (j.contains("mr_recalib_interval"))  j.at("mr_recalib_interval").get_to(sp.mr_recalib_interval);
+    if (j.contains("mr_adaptive_lookback")) j.at("mr_adaptive_lookback").get_to(sp.mr_adaptive_lookback);
 }
 
 // ============================================================================
@@ -242,6 +262,15 @@ struct Config {
                       << " entry_z=" << strategy_params.mr_entry_z
                       << " exit_z=" << strategy_params.mr_exit_z
                       << " size=" << strategy_params.mr_position_size << std::endl;
+            std::cout << "    OU: max_hurst=" << strategy_params.mr_max_hurst
+                      << " half_life=[" << strategy_params.mr_min_half_life
+                      << "," << strategy_params.mr_max_half_life
+                      << "] adaptive=" << (strategy_params.mr_adaptive_lookback ? "on" : "off")
+                      << std::endl;
+            std::cout << "    Risk: min_vol=" << strategy_params.mr_min_daily_vol
+                      << " max_hold=" << strategy_params.mr_max_holding_mult << "x"
+                      << " cooldown=" << strategy_params.mr_cooldown_bars
+                      << " recalib=" << strategy_params.mr_recalib_interval << std::endl;
         } else if (strategy == "delta_hedge") {
             std::cout << "    vol=" << strategy_params.dh_vol
                       << " T=" << strategy_params.dh_time_to_expiry

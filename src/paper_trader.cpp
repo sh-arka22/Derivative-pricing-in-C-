@@ -510,15 +510,14 @@ int main(int argc, char* argv[]) {
               << "  Total P&L: $" << tracker.total_pnl() << "\n";
 
     // ================================================================
-    // Day 5: Strategy Base + Mean Reversion
+    // Day 5: Enhanced Mean Reversion — OU Calibration + Hurst + Risk Controls
     // ================================================================
 
-    std::cout << "\n=== Day 5: Mean Reversion Strategy Verification ===" << std::endl;
+    std::cout << "\n=== Day 5: Enhanced Mean Reversion Verification ===" << std::endl;
     std::cout << std::fixed << std::setprecision(2);
 
-    // Fresh components for strategy test
+    // Fresh components
     trading::MarketDataReplay strat_replay(config.data_files);
-    trading::OptionDataReplay strat_option_replay(config.option_data_files);
     trading::SimulatedExchange strat_exchange(config.sim);
     trading::PositionTracker strat_tracker(config.sim.initial_capital);
 
@@ -529,23 +528,22 @@ int main(int argc, char* argv[]) {
               << "  lookback=" << config.strategy_params.mr_lookback
               << "  entry_z=" << config.strategy_params.mr_entry_z
               << "  exit_z=" << config.strategy_params.mr_exit_z
-              << "  size=" << config.strategy_params.mr_position_size << "\n";
+              << "  size=" << config.strategy_params.mr_position_size
+              << "  adaptive=" << (config.strategy_params.mr_adaptive_lookback ? "on" : "off")
+              << "\n";
 
-    // Run first 30 bars
+    // Run 60 bars (need warmup for OU calibration)
     int bar_count = 0;
     int signal_count = 0;
     int fill_count = 0;
 
-    while (strat_replay.has_next() && bar_count < 30) {
+    while (strat_replay.has_next() && bar_count < 60) {
         auto bars = strat_replay.next();
 
-        // Build MarketSnapshot for this date
         trading::MarketSnapshot snapshot;
         snapshot.date = bars.begin()->second.date;
         snapshot.bars = bars;
-        // option_chains left empty — equity-only strategy
 
-        // Seed exchange + update tracker prices
         for (auto& [sym, bar] : bars) {
             strat_tracker.on_price(sym, bar.close);
             strat_exchange.seed_liquidity(sym, bar);
@@ -572,16 +570,17 @@ int main(int argc, char* argv[]) {
         bar_count++;
     }
 
-    std::cout << "\n--- Day 5 Results (30 bars) ---\n";
-    std::cout << "[STATS] Bars processed: " << bar_count
+    // Print OU calibration diagnostics
+    strategy->print_calibration();
+
+    std::cout << "\n--- Day 5 Results (60 bars) ---\n";
+    std::cout << "[STATS] Bars: " << bar_count
               << "  Signals: " << signal_count
               << "  Fills: " << fill_count << "\n";
     strat_tracker.print_positions();
 
-    // Equity curve check
+    // Equity curve
     auto strat_returns = strat_tracker.daily_return_series();
-    std::cout << "[EQUITY] Snapshots: " << strat_tracker.equity_history().size()
-              << "  Returns: " << strat_returns.size() << "\n";
     if (strat_tracker.equity_history().size() >= 2) {
         std::cout << "[EQUITY] Start: $" << strat_tracker.equity_history().front()
                   << "  End: $" << strat_tracker.equity_history().back()
@@ -589,7 +588,7 @@ int main(int argc, char* argv[]) {
                                     - strat_tracker.equity_history().front()) << "\n";
     }
 
-    // Invariant: equity = cash + positions
+    // Invariant
     double strat_equity = strat_tracker.total_equity();
     double strat_manual = strat_tracker.cash();
     for (auto& [sym, pos] : strat_tracker.positions()) {
