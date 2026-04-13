@@ -20,6 +20,7 @@
 #include "trading/strategy.h"
 #include "trading/strategies/mean_reversion.h"
 #include "trading/risk_guard.h"
+#include "trading/logging.h"
 
 // Verify quantpricer headers work
 #include "greeks/black_scholes.h"
@@ -680,6 +681,117 @@ int main(int argc, char* argv[]) {
                   << " " << order.quantity << ": " << reason << "\n";
     }
 
-    std::cout << "\nAll Day 6 systems operational. Ready for Day 7." << std::endl;
+    // ================================================================
+    // Day 7: Trade Logger — Terminal + CSV Output
+    // ================================================================
+
+    std::cout << "\n=== Day 7: Trade Logger Verification ===" << std::endl;
+    std::cout << std::fixed << std::setprecision(2);
+
+    // Fresh components for logger test
+    trading::MarketDataReplay log_replay(config.data_files);
+    trading::SimulatedExchange log_exchange(config.sim);
+    trading::PositionTracker log_tracker(config.sim.initial_capital);
+    trading::RiskGuard log_risk_guard(config.risk_limits);
+    trading::TradeLogger logger(config.log_dir, config.verbose);
+
+    auto log_strategy = std::make_unique<trading::MeanReversionStrategy>();
+    log_strategy->init(config);
+
+    logger.log_header(config);
+
+    // Run 25 bars with full logger wired in
+    int log_bar_count = 0;
+    bool killed = false;
+
+    while (log_replay.has_next() && log_bar_count < 25 && !killed) {
+        auto bars = log_replay.next();
+        std::string date = bars.begin()->second.date;
+
+        // Update prices + seed exchange
+        for (auto& [sym, bar] : bars) {
+            log_tracker.on_price(sym, bar.close);
+            log_exchange.seed_liquidity(sym, bar);
+        }
+
+        // Log bars
+        logger.log_bar(bars, log_tracker, log_risk_guard);
+
+        // Build snapshot
+        trading::MarketSnapshot snapshot;
+        snapshot.date = date;
+        snapshot.bars = bars;
+
+        // Strategy signals
+        auto orders = log_strategy->on_bar(snapshot, log_tracker, log_exchange);
+
+        // Log signals
+        for (auto& order : orders.stock_orders) {
+            logger.log_signal(order, date);
+        }
+
+        // Risk filter
+        std::vector<std::pair<trading::OrderRequest, std::string>> rejections;
+        auto approved = log_risk_guard.check_orders(
+            orders.stock_orders, log_tracker, &rejections);
+
+        // Log rejections
+        for (auto& [order, reason] : rejections) {
+            logger.log_risk_rejection(order, reason, date);
+        }
+
+        // Execute approved orders
+        for (auto& order : approved) {
+            auto fills = log_exchange.submit_order(order, date);
+            for (auto& fill : fills) {
+                log_tracker.on_fill(fill);
+                log_strategy->on_fill(fill);
+                logger.log_fill(fill, log_tracker);
+            }
+        }
+
+        // Check kill switch
+        auto risk_status = log_risk_guard.monitor(log_tracker);
+        if (risk_status.kill_switch) {
+            logger.log_kill_switch(risk_status, date);
+            killed = true;
+        }
+
+        log_tracker.on_day_end(date);
+        log_bar_count++;
+    }
+
+    // Session summary with performance metrics
+    auto log_returns = log_tracker.daily_return_series();
+    risk::PerformanceMetrics log_metrics = {};
+    if (log_returns.size() >= 2) {
+        log_metrics = risk::compute_metrics(log_returns);
+    }
+    logger.log_session_summary(log_tracker, log_metrics, log_strategy->name(), log_bar_count);
+
+    // Verify CSV was written
+    std::cout << "[VERIFY] CSV path: " << logger.csv_path() << "\n";
+    std::cout << "[VERIFY] Fills logged: " << logger.fill_count()
+              << "  Rejections: " << logger.rejection_count() << "\n";
+
+    // Check CSV file exists and has content
+    {
+        std::ifstream check(logger.csv_path());
+        if (check.is_open()) {
+            std::string header;
+            std::getline(check, header);
+            int lines = 0;
+            std::string line;
+            while (std::getline(check, line)) {
+                if (!line.empty() && line[0] != '#') lines++;
+            }
+            std::cout << "[VERIFY] CSV header: " << header << "\n";
+            std::cout << "[VERIFY] CSV data lines: " << lines << "\n";
+        } else {
+            std::cout << "[VERIFY] ERROR: CSV file not found!\n";
+        }
+    }
+
+    std::cout << "\nAll Day 7 systems operational. Ready for Day 8." << std::endl;
     return 0;
 }
