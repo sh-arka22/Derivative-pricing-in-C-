@@ -25,7 +25,7 @@
 
     "strategy_params": {
         "mr_lookback": 20,
-        "mr_entry_z": 2.0,
+        "mr_entry_z": 1.5,
         "mr_exit_z": 0.5,
         "mr_position_size": 100,
         "mr_max_hurst": 0.5,
@@ -69,7 +69,7 @@
     "risk_limits": {
         "max_position_notional": 50000,
         "max_portfolio_notional": 200000,
-        "max_loss": 5000,
+        "max_loss": 20000,
         "max_order_size": 500,
         "max_var_99": 10000,
         "max_open_orders": 20

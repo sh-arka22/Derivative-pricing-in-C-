@@ -271,16 +271,20 @@ public:
                 state.hurst = estimate_hurst(state.price_history,
                                              std::min(20, n / 2));
 
-                // Eligibility: mean-reverting AND tradeable half-life
+                // Eligibility: OU must be valid + half-life in range.
+                // Hurst filter only kicks in after 30 bars (noisy with small samples).
+                bool hurst_ok = (n < 30) || (state.hurst < max_hurst_);
                 state.eligible = state.ou.valid
-                    && state.hurst < max_hurst_
+                    && hurst_ok
                     && state.ou.half_life >= min_half_life_
                     && state.ou.half_life <= max_half_life_;
 
                 // Adaptive lookback: use half-life as z-score window
                 if (adaptive_lookback_ && state.ou.valid) {
-                    int hl = static_cast<int>(std::round(state.ou.half_life));
-                    state.effective_lookback = std::max(5, std::min(hl, 40));
+                    // Use 2 * half_life as lookback — gives the z-score a wide
+                    // enough window to detect meaningful deviations from theta.
+                    int hl = static_cast<int>(std::round(2.0 * state.ou.half_life));
+                    state.effective_lookback = std::max(10, std::min(hl, 40));
                 } else {
                     state.effective_lookback = lookback_;
                 }
@@ -305,14 +309,17 @@ public:
             }
 
             // ---- 4. Wait for enough data ----
-            if (n < state.effective_lookback) continue;
+            // Need lookback+1 prices: lookback for z-score, +1 for volatility returns
+            if (n < state.effective_lookback + 1) continue;
 
             // ---- 5. Compute z-score with effective lookback ----
             double z = compute_zscore(state.price_history, state.effective_lookback);
 
             // ---- 6. Min volatility check ----
+            // compute_volatility returns stddev of daily RETURNS (already normalized)
+            // so compare directly against min_daily_vol threshold, no division by price.
             double vol = compute_volatility(state.price_history, state.effective_lookback);
-            if (bar.close > 1e-10 && vol / bar.close < min_daily_vol_) {
+            if (vol < min_daily_vol_) {
                 continue;  // dead market — skip
             }
 
